@@ -1,0 +1,421 @@
+# 绝区零核心战斗逻辑复刻 — Phase 3 实施计划（闪避 / 弹刀 / 突击支援 / 编队切换 + Phase 3.5 时间管理）
+
+> **项目**: ZZZCombatRemake (UE 5.8)
+> **状态**: 🟢 已批准实施（2026-08-02 双审核通过：Epic Developer Assistant + 代码对照审计）
+> **日期**: 2026-08-02
+> **依据**: `Docs/ZZZ-Combat-System-Design.md`（Phase 3/3.5 章节 + 8.1 Pawn-ASC + 8.6 CustomTimeDilation + 8.10 收刀窗口 + 10.4 M1 警告）——本文档为设计文档的落地实施细化，不改变任何架构决策
+>
+> **审核记录（2026-08-02）**:
+> - 🟢 **Epic Developer Assistant**：批准实施。优化建议（IsNearlyEqual 防抖 / 完美闪避调试区分 / 三人切换压力测试）已并入对应 Task（⭐审核 标记）；其 TWeakObjectPtr 建议（风险 #4 已有）与 CanDodge 严格窗口控制（计划 EndAbility 兜底 + Invulnerable 双保险更强）无需改动
+> - 🟢 **代码对照审计**：现状盘点逐条核实属实；按用户设计规则修订——敌人攻击不携带 Daze（Task 1d）、GE 施加 API 措辞（Task 3b）、Task 4 Cast 取舍说明、DoTrace 迁移偏差显式记录（2.3）
+>
+> **审查修订（2026-08-08，实施前方案评审）**: 评审确认方案骨架可直接执行；以下修订已并入对应 Task（⭐审查修订 标记）——① 弹刀取舍显式标注（无精防窗口 + 无资源消耗，均推迟 Phase 5，Task 5a）；② `FindNearestEnemy` 改状态优先级语义（Radius 内找最近 Attacking → 其次 Staggered → 否则普通，两半径配置，Task 5b）；③ 弹刀后敌人补 `State.Staggered`（弹刀→硬直→下次切换变突击，机制串联，Task 5a）；④ SwitchOut 期间旧角色挂 `State.Invulnerable` + Interrupted 兜底隐藏（Task 5c）；⑤ `TryActivateAbilityByClass` 失败回落普通切换（Task 5b）；⑥ AssistOffensive 入场前段小无敌（AbilityWindow 挂 Invulnerable，Task 5a）；⑦ 弹刀命中反馈（复用受击顿帧 + 震屏，验证节）；⑧ TeamPanel 改绑 `OnPossess` 刷新（Task 6）；⑨ 阵亡成员跳过已确认被现有守卫覆盖（`IsSquadClassEliminated`）。
+
+---
+
+## 一、背景与目标
+
+### 1.1 Context
+
+Phase 1（GAS 基础设施）/ 1.5（输入→Tag 桥接）/ 2（普攻连段 + 双窗口输入缓冲 + 伤害管线 + 飘字）已完成；角色切换最小原型已 PIE 验证（2026-08-01，Pawn-ASC 持久化成员）。本计划实施设计文档的 **Phase 3（防守/切换闭环）+ Phase 3.5（时间管理）**，两阶段合并执行（用户已确认）。
+
+### 1.2 已确认决策（2026-08-02 与用户确认）
+
+| # | 决策 | 说明 |
+|---|------|------|
+| 1 | **闪避/弹刀/入场动画由用户导入** | 计划内路径为占位约定（`/Game/ZZZ/Animations/`），实施时以实际导入为准；未导入前用珂蕾妲骨架现有动画占位 |
+| 2 | **测试敌人用 Mannequin** | SKM_Manny_Simple + 现有动画（MM_Attack_01 等），跑通"敌人攻击→玩家闪避/弹刀"闭环，Phase 6 换真怪物 |
+| 3 | **弹刀/突击支援 = 切换自动判定** | 按切换键时自动判断：敌人攻击中→弹刀；敌人受击硬直中→突击追击；否则普通切换。符合 ZZZ 原版交互（原版即切换键，不区分按键） |
+| 4 | **Phase 3.5 并入本次** | GE_SlowMotion（只减速 `State.Enemy`）+ Hit Stop + 震屏，与完美闪避天然耦合 |
+
+### 1.3 产出定义
+
+按闪避键 → 闪避位移+无敌帧 → 完美时机挡住攻击触发慢动作（只减速敌人）+震屏；攻击中按切换 → 弹刀反击；敌人受击硬直中按切换 → 突击追击；平时切换 → 出场动画接驳；3 人编队面板实时显示 HP。
+
+---
+
+## 二、现状盘点（探索结论 2026-08-02）
+
+### 2.1 可复用代码（Phase 3 直接照抄/扩展）
+
+| 代码 | 位置 | 复用方式 |
+|---|---|---|
+| `UZZZBasicAttack` ActivateAbility 编排 | `ZZZ/Abilities/ZZZBasicAttack.cpp` | Commit → 可选 RotateToTarget → PlayMontageAndWait+4回调 → WaitInputBuffer → WaitCombo → CheckComboTransition（先激活后结束）。闪避/弹刀/突击照抄此结构 |
+| `UAbilityTask_WaitCombo` | `ZZZ/Tasks/AbilityTask_WaitCombo` | **完全通用**：构造参数（窗口 tag, 输入 tag）事件驱动（RegisterGameplayTagEvent NewOrRemoved + GenericGameplayEventCallbacks），窗口关闭时清 PC 缓冲 |
+| `UAnimNotifyState_AbilityWindow` | `ZZZ/Animation/` | WindowTag 可配置（头注释已预留 CanParry），挂闪避/弹刀蒙太奇前段 |
+| `UAbilityTask_RotateToTarget` | `ZZZ/Tasks/` | 过滤规则现成（排除自身/隐藏成员/State.Dead），突击支援转身复用 |
+| `AZZZPlayerController::SwitchToNextCharacter` | `ZZZ/Player/ZZZPlayerController.cpp:57-156` | 持久化成员 + Started 事件 + 隐藏/显示 + 去重，已 PIE 验证。重构为参数化 Direction + 自动判定 |
+| `UZZZAttributeSet::PostGameplayEffectExecute` | `ZZZ/Attributes/ZZZAttributeSet.cpp:46-106` | IncomingDamage 分支 SetHealth 前留有 mitigation 钩子（第 57 行注释）——完美闪避免伤拦截点 |
+| `ZZZAnimNotify_AttackTrace` | `ZZZ/Animation/` | 骨骼 socket 前向 Sweep → SetByCaller(Data_Damage/Data_Daze) → ApplyGameplayEffectSpecToTarget。敌人攻击/弹刀反击的命中判定模板 |
+| `GC_ZZZ_DamageNumber` + 飘字池管线 | `ZZZ/Cues/` + `ZZZ/UI/` | GameplayCue(IsOverride=true) → PC 池。震屏 cue 照抄此结构 |
+| `GE_Damage` / `BP_CameraShake_Hit_Player` | `/Game/ZZZ/GE/`、`Variant_Combat` | GE 模板 / 震屏复用（无需新建 Shake） |
+
+### 2.2 缺口（Phase 3 需新建）
+
+| 缺口 | 说明 |
+|---|---|
+| 敌人无攻击能力 | `BP_EnemyTest` 无 AnimClass、无攻击 GA——完美闪避/弹刀无可判定对象 |
+| 闪避/弹刀/入场动画 | Okuma 骨架下不存在（用户导入）；只有 `SwitchOut_Normal_Anim1` 出场动画 |
+| 阵营 tag | `State.Enemy`/`State.Player` 源码中完全未注册（敌人 BeginPlay 只加 `State_Alive`） |
+| 时间桥接 | `TimeDilation` 属性、`GE_SlowMotion`、CustomTimeDilation 桥接全从零建（全 Source 零引用） |
+| 第三人 | SquadClasses 仅 [BP_Okuma, BP_Okuma_Switch]，需第三个变体 |
+| TeamPanel | 无任何小队 UI |
+
+### 2.3 关键纠偏（探索中发现的事实，执行者必须知悉）
+
+- **`UZZZGameplayAbility` 基类没有任何蒙太奇逻辑**——4 回调 + MontageTask 在 `UZZZBasicAttack` 内（基类仅 ComboIndex/NextComboAbility/AttackMontage 三字段）。**Task 1a 需先做基类样板上移**，否则 Dodge/Assist 都要复制粘贴。
+- DA_ZZZInputConfig 中 `Input.Switch.Next` 走 **Triggered**（每帧触发，仅广播事件无害；PC 端 SwitchAction 独立绑 Started）。新 `Input.Dodge` 必须走 Started 语义 → `FZZZInputAction` 需加 `bTriggerOnStarted` 字段。
+- ⭐审核修复（文档对齐）: `AbilityTask_DoTrace` 迁移**显式推迟至 Phase 5+**——设计文档 8.8 原定"Phase 3+ 全面迁移到 AbilityTask"，但本 Phase 敌人攻击/弹刀反击/突击追击的命中判定全部继续用 `ZZZAnimNotify_AttackTrace`（AnimNotify 过渡方案，Phase 2 已验证）。此偏差在此显式记录，不静默偏离设计文档。
+
+---
+
+## 三、实施计划
+
+> 每个 Task 完成即构建 + 按该 Task 验证点 PIE 手测，不跨 Task 堆积。
+
+### Task 0 — 地基：Tag 注册 + TimeDilation 属性 + 阵营标记
+
+**修改**：`ZZZ/Tags/ZZZGameplayTags.h/.cpp`、`ZZZ/Attributes/ZZZAttributeSet.h/.cpp`、`ZZZ/Enemies/ZZZCombatEnemy.cpp`、`ZZZ/ZZZCharacter.cpp`、`Config/DefaultGameplayTags.ini`
+
+**新增 Tag**（命名照抄设计文档 6.4，h 加成员 + cpp 加 `Manager.AddNativeGameplayTag` 一行，与现有格式一致）：
+
+```
+Input.Dodge  Input.Switch.Prev
+Ability.Defense.Dodge  Ability.Defense.Dodge.Perfect  Ability.Defense.Assist
+Ability.Switch.Quick  Ability.Attack.Enemy        ← 敌人攻击身份（供 CancelAbilities 定位）
+State.Invulnerable  State.SlowMotion  State.Enemy  State.Player  State.Attacking
+Effect.Ability.CanDodge  Effect.Ability.CanParry
+Event.Combat.DodgePerfect
+GameplayCue.ZZZ.CameraShake                          ← ini 注册（复制 DamageNumber 的 ini+IsOverride 双保险模式）
+```
+
+`State.Attacking`（敌人攻击中标记）与 `State.Combat.Recovery` 同级惯例一致，供切换自动判定查询。
+
+**AttributeSet**：新增 `TimeDilation` 属性（`InitTimeDilation(1.0f)`）+ `ATTRIBUTE_ACCESSORS`。**桥接在 Task 3 做**——Duration GE 不触发 PostGameplayEffectExecute（设计文档 10.4 M1），走 ValueChangeDelegate。
+
+**阵营标记**（⭐审核修复：LooseTag → Infinite GE 管理）：新建 `ZZZ/Effects/ZZZFactionGameplayEffects`（`UZZZGameplayEffect_Faction`，纯 Infinite 载体）；`AZZZCombatEnemy::BeginPlay` / `AZZZCharacter::InitAbilitySystem` 用 `MakeOutgoingSpec` + **`Spec.Data->DynamicGrantedTags`** 授予 `State.Enemy` / `State.Player` 后 `ApplyGameplayEffectSpecToSelf`（补敌我不对称；供敌人找玩家 / Targeting 过滤）。Tag 生命周期归 ASC 管理（效果移除/ASC 重置自动清理）。
+
+> ⭐审核修复（2026-08-02 实施记录，LooseTag → GE 迁移踩坑）：
+> 1. **CDO 时序坑**：GE 的 CDO 在模块加载期构造（早于 `StartupModule`），构造函数内读 `FZZZGameplayTags::Get()` 得到无效 Tag，配置进 CDO 的 GrantedTags 会被静默丢弃 → 改为**应用时**经 `FGameplayEffectSpec::DynamicGrantedTags` 动态授予（运行时 Tag 必已注册，`GetAllGrantedTags` 会合并 DynamicGrantedTags）。
+> 2. **5.3+ 组件体系**：`GrantedTags` / `Application Tag Requirements` 等 GE 直接属性已废弃，改为 `GEComponents`（`UTargetTagsGameplayEffectComponent` 授予 / `UTargetTagRequirementsGameplayEffectComponent` 过滤）——**Task 3b 的 GE_SlowMotion 配置相应调整**（见下）。
+> 3. 构造函数内创建组件必须用**成员版 `CreateDefaultSubobject`**，`NewObject` 会触发 Fatal（"inconsistent object names"）。
+
+**验证**：构建 → PIE → `showdebug abilitysystem` 确认玩家/敌人 ASC tag 列表。
+
+---
+
+### Task 1 — 敌人最小攻击（让闪避/弹刀有可判定对象）
+
+#### 1a. 基类蒙太奇样板上移（前置重构，后续所有 GA 依赖）
+
+**修改**：`ZZZ/Abilities/ZZZGameplayAbility.h/.cpp`、`ZZZ/Abilities/ZZZBasicAttack.h/.cpp`
+
+- 基类新增 protected：`bool PlayAttackMontage();` + 4 个 UFUNCTION 回调（Completed/BlendOut/Interrupted/Cancelled）+ `UPROPERTY() MontageTask`；回调统一 `EndAbility(..., bWasCancelled)`；`AttackMontage` 为 null 时返回 false。
+- `UZZZBasicAttack` 改为调 `PlayAttackMontage()`，删除自己的 MontageTask/回调。
+- ⚠ 不改 BlendOut+Completed 双回调各 End 一次的行为（引擎守卫，Phase 2 已验证，勿"修复"）。
+
+#### 1b. UZZZEnemyAttack（新建 C++，~50 行）
+
+**新建**：`ZZZ/Abilities/ZZZEnemyAttack.h/.cpp`（UZZZGameplayAbility 子类）
+
+- ctor 加 AbilityTags=`Ability.Attack.Enemy` + **`ActivationOwnedTags=State.Attacking`**（⭐审核修复：能力生命周期 tag 走引擎原生机制，激活自动授予/结束自动移除，含被打断路径，无需手动 Add/Remove）；`ActivateAbility` = Commit → 可选 RotateToTarget → `PlayAttackMontage()`；`EndAbility` = Super。
+- 不用 UZZZBasicAttack（会空跑 WaitInputBuffer/WaitCombo 两个无用任务）；`State.Attacking` 由引擎管理（Ability 结束全路径自动移除）。
+- 此 C++ 同时是 Phase 6 StateTree 的挂点。
+
+#### 1c. AZZZCombatEnemy 攻击行为
+
+**修改**：`ZZZ/Enemies/ZZZCombatEnemy.h/.cpp`
+
+- 新配置：`bEnableAttackBehavior`(默认 false)、`AttackAbilityClass`、`AttackRange`(⭐实施修订 220→**120**：与 AttackTrace 命中覆盖 125cm 匹配——原值 220 会"触发攻击但挥砍打空"，PIE 实测确认)、`AggroRange`(1000)、`AttackCooldown`(2.2)、`LastAttackTime`。
+- `Tick`：找最近玩家（TActorIterator<AZZZCharacter> 过滤 hidden/State.Dead）→ ⭐实施增补：AggroRange 内但超出 AttackRange → `AddMovementInput` 追击（XY 平面，Phase 6 换 StateTree 导航）；距离达标且冷却到 → 面向玩家 → `TryActivateAbilityByClass`。
+- `TryStartAttack` 守卫：`!bEnableAttackBehavior || HasTag(State.Attacking/Staggered/Stun/Dead)` 返回。
+- BeginPlay 追加：`State.Enemy` tag + `GiveAbility(AttackAbilityClass)`（去重同 AddCharacterAbilities 模式）。
+- 纯 Tick 驱动，不用 BP Timer（可测试、Phase 6 易替换）。
+
+#### 1d. 资产（BP/资产配置）
+
+| 资产 | 路径 | 配置 |
+|---|---|---|
+| AM_EnemyAttack | `/Game/ZZZ/Animations/AM_EnemyAttack` | 基于 Mannequin `MM_Attack_01`；挂 `ZZZAnimNotify_AttackTrace`：hand_r、GE_Damage、BaseDamage=15（⭐审核修复：不设 `Data.Daze`——Daze 是玩家对怪物单方向攻击，怪物攻击不携带 Daze，玩家无 Daze 条；ExecCalc 对未设置的 SetByCaller 回退 0） |
+| GA_EnemyAttack | `/Game/ZZZ/Abilities/GA_EnemyAttack` | UZZZEnemyAttack BP 子类，AttackMontage=AM_EnemyAttack |
+| BP_EnemyTest_Manny | `/Game/ZZZ/Enemy/` | AZZZCombatEnemy 子类：SKM_Manny_Simple + ABP_Manny_Combat（Variant_Combat 现成；耦合过多则复制精简）、bEnableAttackBehavior=true、AttackAbilityClass、InitialMaxHealth=200；放入 ZZZ.umap |
+
+**验证**（PIE 实测通过 2026-08-02）：敌人逼近→面向→挥砍→玩家掉血（~14 = 15×DefenseFactor）+飘字 ✅；冷却 2.2s 间隔 ✅；`State.Attacking` 生命周期（ActivationOwnedTags）✅；**消灭后停手 ✅**（玩家被连续攻击打空 HP → `State.Dead` → `IsEliminated()` 过滤 → nearest=NONE 停手——以玩家被消灭的形式验证）；眩晕守卫（State.Staggered 无人施加，Task 4 后再验）。
+
+---
+
+### Task 2 — 闪避 GA_Dodge
+
+#### 2a. 输入链路扩展
+
+**修改**：`ZZZ/Input/ZZZInputConfig.h`、`ZZZ/ZZZCharacter.h/.cpp`
+
+- `FZZZInputAction` 加 `bTriggerOnStarted = false` 字段——Dodge/Switch 走 Started 一次性触发，普攻保持 Triggered；`SetupPlayerInputComponent` 按字段选 ETriggerEvent。
+- `AZZZCharacter` 新增 `DodgeAbilityClass`；`IsBasicAttackActive()` 泛化为 `IsAbilityActiveWithTag(FGameplayTag)`。
+- `Input_AbilityInputTagPressed` 追加门控：`InputTag == Input.Dodge && DodgeAbilityClass && !IsAbilityActiveWithTag(Ability.Defense.Dodge) && !IsEliminated() && !HasTag(State.Stun)` → `TryActivateAbilityByClass(DodgeAbilityClass)`。
+- 语义：闪避允许打断普攻（任意阶段）；禁止二连闪/死亡/眩晕中闪避。
+
+#### 2b. UZZZDodge（新建 C++）
+
+**新建**：`ZZZ/Abilities/ZZZDodge.h/.cpp`（UZZZGameplayAbility 子类）
+
+- `ActivateAbility`：Commit → `CancelAbilities(Ability.Attack.Basic)` 打断普攻 → `PlayAttackMontage()`。**无敌帧 = `ActivationOwnedTags=State.Invulnerable`**（⭐审核修复：引擎自动授予/移除，全路径覆盖，无需手动 Add/Remove）。
+- ⭐实施增补（2026-08-05 用户需求）：**方向语义**——有移动输入 → 沿输入方向冲刺（`GetLastInputVector`）；无输入 → 向后闪避（-Forward）。**二连闪惩罚 CD**——闪避后 `DoubleDodgeWindow`(0.7s) 内再次闪避 → 进入 `DodgeCooldown`(0.7s) 冷却（冷却中闪避被拒：ActivateAbility 开头检测直接 EndAbility；能力实例内计时，跨激活保留；两参数 BP 可调）。
+- ⭐架构决策（2026-08-05 用户确认）：**一个 Ability + 方向选蒙太奇**（非两个 GA）——前后闪机制完全相同（无敌帧/CD/打断/位移），方向是输入数据而非能力身份；二连闪 CD 状态单实例天然共享。`ForwardMontage`/`BackMontage` 两个配置，按 `LastInputVector` 选择；**位移走蒙太奇自带 Root Motion**（用户资产已带位移），`bUseProceduralDisplacement` 默认 false 仅作占位动画兜底；基类新增 `PlayMontage(指定蒙太奇)` 重载（`PlayAttackMontage` 变包装）。
+- ⭐设计确认（2026-08-06）：**闪避全程（含前段）可攻击**——GA_Dodge **不配** `BlockAbilitiesWithTag`。机制：攻击蒙太奇覆盖闪避蒙太奇 → PlayMontageAndWait Interrupted → 闪避 EndAbility → `ActivationOwnedTags` 自动移除无敌。未来冲刺攻击 = 独立 GA + `ActivationRequiredTags`（闪避中 tag），角色代码不动。**后段移动打断**：后段挂 AbilityWindow（`State.Combat.Recovery`），`Move()` 在 Recovery tag 下 `StopAnimMontage()`（普攻 Cancel + 闪避停蒙太奇，一个改动服务两者；普攻能打断的本质是 Cancel 路径无条件 StopMontage，闪避 End 路径不停蒙太奇所以需显式 Stop）。
+- ⭐实施定稿（2026-08-08，PIE 验证通过）：**两段式统一机制**——基类 `EndEventTag`（BP 配置：GA_Dodge=`Event.Combat.DodgeEnd`、GA_BasicAttack_N=`Event.Combat.AttackEnd`）+ 蒙太奇动作段末尾挂 `AnimNotify_SendGameplayEvent` → GA 提前 EndAbility → 蒙太奇过渡段无主播放（`bStopWhenAbilityEnds=false`）。**修复普攻收刀段 bug**：原 GA 生命周期=整个蒙太奇，连段窗口关闭后攻击输入被门控（`IsAbilityActiveWithTag`）吞掉、仅移动可打断；现窗口关后（AttackEnd notify）GA 立即结束 → 门控放行 → 可正常起手第 1 段。连段（窗口内）/缓冲/门控全部零改动；闪避手写监听迁移到基类（删重复代码）。对比过 CanCombo Remove 方案（需"见过 Add"守卫，tag 计数逻辑不干净）与门控分支方案（Cancel+起手），notify 事件方案零判断零守卫且与闪避对称，最终采纳。
+- 位移二选一（开关 `bUseProceduralDisplacement`）：Root Motion 动画 → 直接蒙太奇；无 Root Motion → 蒙太奇 + `UAbilityTask_ApplyRootMotionConstantForce`（方向=LastMovementInputVector 或 -Forward，⭐实施修订：Strength 是**加速度** cm/s²，`DodgeAcceleration=11000` + `DodgeDuration=0.22` ≈ 266cm 位移——原计划 Speed=1200 按加速度算只有 29cm，与验证点 260cm 矛盾；两参数 BP 可调，isAdditive）。
+- Task 3 追加：`WaitGameplayEvent(Event.Combat.DodgePerfect)` → 施加 GE_SlowMotion。
+- `EndAbility`：兜底移除 `Effect.Ability.CanDodge`（Invulnerable 由引擎管理，无需手动移除）。
+- **完美窗口 = `AnimNotifyState_AbilityWindow`** 挂蒙太奇前段（WindowTag=CanDodge，动画师摆放时序）。符合设计文档 8.2 分层。
+
+#### 2c. 资产
+
+IA_ZZZDodge（Shift+可选 RMB）→ IMC_ZZZDefault 映射 → DA_ZZZInputConfig 加 `IA_ZZZDodge→Input.Dodge`（bTriggerOnStarted=true）→ AM_Dodge（`/Game/ZZZ/Animations/`，**用户资产**；未导入前用任一珂蕾妲动画占位 + bUseProceduralDisplacement=true。⚠ Mannequin 的 MM_Dash 骨架不兼容，不能用于 Okuma）→ GA_Dodge（bRotateToTarget=false）→ 三个角色 BP 的 DefaultAbilities 追加 GA_Dodge。
+
+**验证**：PIE — Shift 闪避位移正确；闪避中敌人攻击穿过不掉血不飘字；闪避打断普攻；不能二连闪；眩晕中无法闪避。
+
+---
+
+### Task 3 — 完美闪避 + GE_SlowMotion + 震屏 + Hit Stop（3.5 主体）
+
+#### 3a. 完美闪避判定（AttributeSet 拦截）
+
+**修改**：`ZZZ/Attributes/ZZZAttributeSet.cpp` IncomingDamage 分支，`SetIncomingDamage(0)` 与 ≤0 早退之后、SetHealth 之前：
+
+```cpp
+const bool bInvulnerable = TargetASC && TargetASC->HasMatchingGameplayTag(Tags.State_Invulnerable);
+if (bInvulnerable)
+{
+    if (TargetASC->HasMatchingGameplayTag(Tags.Effect_Ability_CanDodge) && SourceASC)
+    {
+        FGameplayEventData Data;
+        Data.Instigator = Context.GetInstigator();   // 攻击者 = 敌人
+        Data.Target = TargetActor;
+        Data.EventMagnitude = DamageAmount;
+        TargetASC->HandleGameplayEvent(Tags.Event_Combat_DodgePerfect, &Data);
+    }
+    return;   // 免伤：不扣血、不飘字、不发 Hit、不死亡检测
+}
+```
+
+- **免伤 = 不把 IncomingDamage 应用到 Health**（Meta 消费点拦截，扣血后的飘字/Cue/Hit 事件全部短路）。
+- **事件解耦**：AttributeSet 只广播 `Event.Combat.DodgePerfect`（带攻击者 Instigator），闪避能力内用 `UAbilityTask_WaitGameplayEvent` 监听并施加 GE——AttributeSet 保持零 GE 引用，符合 8.7"属性层发事件、能力层响应"模式。
+- 闪避中一律不显示伤害数字（原版如此）；反馈 = 慢动作 + 震屏。
+
+#### 3b. 慢动作
+
+**修改**：`UZZZDodge` 追加 `SlowMotionEffect`(TSubclassOf<UGameplayEffect>) + `WaitGameplayEvent(Event_Combat_DodgePerfect)` 任务 → 事件回调：攻击者 ASC = `Cast<IAbilitySystemInterface>(Payload->Instigator)` → 自身 ASC `MakeOutgoingSpec(SlowMotionEffect)` → **在攻击者（敌人）ASC 上调用 `ApplyGameplayEffectSpecToSelf(Spec)`**（⭐审核修复：spec 由玩家 ASC 生成、在目标 ASC 上应用——`ApplyGameplayEffectSpecToSelf` 作用于调用者，勿在玩家 ASC 上调用；Application Requirement 判定 State.Enemy）→ 自身 `ExecuteGameplayCue(GC_ZZZ_CameraShake)`。
+
+**GE_SlowMotion 资产**（`/Game/ZZZ/GE/GE_SlowMotion`，纯 BP 配置）：Duration Policy=Has Duration 2.0s；Modifier TimeDilation=Override 0.15；⭐审核修复（5.3+ 组件体系，编辑器内配置）：过滤走 `UTargetTagRequirementsGameplayEffectComponent`（Target HasTag `State.Enemy`，替代已废弃的 Application Tag Requirements 属性）；授予走 `UTargetTagsGameplayEffectComponent`（Add Tags=`State.SlowMotion`，替代已废弃的 Granted Tags 属性）。
+
+**桥接**（M1 落地）：`AZZZCombatEnemy::BeginPlay` 绑 `GetGameplayAttributeValueChangeDelegate(GetTimeDilationAttribute())` → 回调 `CustomTimeDilation = Data.NewValue`（5.8：`SetCustomTimeDilation` 已移除，直接属性赋值）——GE 施加(0.15)/到期(1.0) 都经此桥接。⭐审核建议：写入前 `FMath::IsNearlyEqual(CurrentDilation, Data.NewValue)` 相等则跳过，避免浮点抖动触发不必要的系统更新。
+
+> ⭐ **设计变更（2026-08-09，用户拍板：玩家减速 0.5 + 删除旧命中帧判定）—— 极限闪避判定前移为"按下时窗口查询"**：
+>
+> **新判定**：`UZZZDodge::ActivateAbility` 在 Commit 后查询 `FindNearestEnemy(PerfectDodgeDetectRadius=500, Effect.Enemy.AttackWindow)`——**命中 → 立即极限闪避**：敌人 ASC 施加 `GE_SlowMotion`(0.15)（**立即——按下瞬间的"抓住时间"反馈**）+ 自身 `ExecuteGameplayCue(GC_ZZZ_CameraShake)`。**不再等待命中帧**——看到黄闪按闪避即成功。
+>
+> **玩家慢放 = 动画师摆放（⭐手感迭代 2026-08-09）**：`GE_PlayerSlowMotion`(0.5，新建，Duration 2.0s，无过滤) **不在激活时施加**——闪避位移段必须正常速播放（闪避要"快"）。改由**新事件 `Event.Combat.DodgeSlowStart`**（AnimNotify_SendGameplayEvent 摆在闪避蒙太奇位移末段）驱动：`UZZZDodge` 监听该事件（`PlayerSlowEventTag` BP 可配，EndAbility 清理句柄）→ `OnPlayerSlowStart()` 施加玩家慢放。⚠ notify 必须在能力生命周期内（DodgeEnd notify 之前）。**任何新闪避先移除旧玩家慢放**（`PlayerSlowEffectHandle` 记录 + `RemoveActiveGameplayEffect`）——慢放中再闪避位移仍正常速。玩家侧桥接：`AZZZCharacter::OnTimeDilationChanged`（同敌人模式）。
+>
+> **窗口 tag**：新注册 `Effect.Enemy.AttackWindow`——挂在**敌人**攻击蒙太奇（`AM_EnemyAttack`）前摇段（黄闪 burst → 攻击判定帧）的 `AnimNotifyState_AbilityWindow`，与黄闪同步摆放。**该窗口同时是极限闪避（闪避键）与弹刀（切换键，Task 5a/5b 已同步修订）的共用判定窗口**。
+>
+> **删除的旧链**：① AttributeSet 的 CanDodge 命中帧广播 → 仅保留 Invulnerable 免伤短路（`ZZZAttributeSet.cpp` IncomingDamage 分支）；② `UZZZDodge` 的 DodgePerfect 事件监听/句柄 → 删；③ `CanDodge` tag 本体保留注册（弹刀窗口 CanParry 等后续可复用，暂不删注册）；④ 玩家闪避蒙太奇（`AM_Dodge_Fwd/Back`）上的 CanDodge AbilityWindow **资产删除**。
+>
+> **验证补充**：敌人前摇（黄闪期）按闪避 → 敌人慢放 2s + 玩家 0.5 慢放 2s + 震屏；黄闪后（窗口已过）闪避 → 普通闪避无奖励；窗口外敌人攻击命中闪避无敌 → 免伤无奖励。
+
+#### 3c. 震屏 GC
+
+**新建**：`ZZZ/Cues/GC_ZZZ_CameraShake.h/.cpp`（UGameplayCueNotify_Static，照抄 GC_ZZZ_DamageNumber：ctor 设 GameplayCueTag + `IsOverride=true`）；`CameraShakeClass` + `ShakeScale` 可配；OnExecute → `GetFirstPlayerController()->ClientStartCameraShake(...)`。
+
+**资产**：`/Game/ZZZ/Cues/GC_ZZZ_CameraShake` BP（CameraShakeClass=**复用现成 `BP_CameraShake_Hit_Player`**）。
+
+**触发点**：敌人受击扣血成功 → SourceASC 执行 GC（+消灭时更大强度）；完美闪避 → 能力内对自身执行。
+
+#### 3d. Hit Stop（只顿敌人，0.05s）
+
+**修改**：`AZZZCombatEnemy` 新增 `ApplyHitStop(float Duration)`：`SetCustomTimeDilation(0.0)` + SetTimer → 回调**现读** `AttributeSet->GetTimeDilation()` 恢复（**属性是 CustomTimeDilation 唯一真源**——慢动作中受击恢复 0.15 而非 1.0）。bHitStopActive 防叠。触发：敌人受击分支 + 消灭分支（0.1s），在 Task 4 硬直逻辑内调用。
+
+**验证**：PIE — 完美闪避：敌人攻击动画 0.15× 慢放 2s 后恢复 + 玩家震屏；受击：敌人冻结约 3 帧；慢动作中再受击，顿帧后仍是慢动作。⭐审核建议：DodgePerfect 触发时加临时 ScreenMessage（或专用 GameplayCue），区分「普通闪避躲开攻击」与「触发完美判定的闪避」。
+
+---
+
+### Task 4 — 敌人受击硬直 State.Staggered（突击支援前置）
+
+**修改**：`ZZZ/Attributes/ZZZAttributeSet.cpp` IncomingDamage 分支，扣血后（`GetHealth() > 0` 守卫）：
+
+```cpp
+if (TargetASC && TargetASC->HasMatchingGameplayTag(Tags.State_Enemy))
+{
+    TargetASC->AddLooseGameplayTag(Tags.State_Staggered);
+    FGameplayTagContainer CancelTags;
+    CancelTags.AddTag(Tags.Ability_Attack_Enemy);
+    TargetASC->CancelAbilities(&CancelTags);          // 打断敌人攻击（GA End → State.Attacking 移除）
+    if (AZZZCombatEnemy* Enemy = Cast<AZZZCombatEnemy>(GetOwningActor()))
+    {
+        Enemy->ApplyHitStop(0.05f);
+    }
+    // LooseTag + 延迟 Timer 0.35s 移除（lambda 捕获 TWeakObjectPtr，防敌人先销毁悬垂）
+}
+```
+
+- 移除方案：LooseTag + 延迟 Timer（短状态 + 避免 AttributeSet 持有 GE 引用；与 State.Combat.Recovery 同模式）。
+- ⭐审核说明：此处直接 `Cast<AZZZCombatEnemy>` 调用而非事件驱动——Hit 事件由 SourceASC 广播，敌人侧监听需先判断 `EventData.Target == self` 反而绕；单机下直接调用最简单（代价：AttributeSet 依赖具体 Actor 类，敌人种类增多后可改事件）。
+
+**验证**：PIE — 命中敌人 → 攻击被断、0.35s 硬直后恢复节奏。
+
+---
+
+### Task 5 — 切换自动判定（弹刀/突击/普通）+ 动画接驳 + 第三人
+
+#### 5a. 两个新能力（C++）
+
+**新建**：`ZZZ/Abilities/ZZZAssistDefensive.h/.cpp`（弹刀）、`ZZZ/Abilities/ZZZAssistOffensive.h/.cpp`（突击支援）
+
+- **Defensive**（AbilityTags=`Ability.Defense.Assist` + **`ActivationOwnedTags=State.Invulnerable`** 入场全程无敌，⭐审核修复：引擎自动管理）：Commit → 最近敌人 ASC `CancelAbilities(Ability.Attack.Enemy)`（弹刀打断）→ **`RemoveLooseGameplayTag(Effect.Enemy.AttackWindow)` 兜底**（⭐设计变更 2026-08-09：弹刀窗口与极限闪避共用 `Effect.Enemy.AttackWindow`——Cancel 攻击后若 AnimNotifyState 的 NotifyEnd 未触发，窗口 tag 会残留导致后续误判，显式移除）→ ⭐审查修订：对敌人 ASC `AddLooseGameplayTag(State.Staggered)` + 延迟 Timer 移除（复用 Task 4 的 LooseTag+Timer 模式；**弹刀→敌人硬直→下次切换自动判突击，两个支援由 tag 自然串联**；敌人 Attacking 状态时几乎不可能已在 Staggered 中，AddLoose 幂等，重叠风险可接受）→ `PlayAttackMontage()`（蒙太奇前段挂 AbilityWindow CanParry + 中后段挂 AttackTrace 反击）。EndAbility 只留 CanParry 兜底（Invulnerable 由引擎管理）。
+- **Offensive**（AbilityTags=`Ability.Switch.Quick`）：Commit → `PlayAttackMontage()`（蒙太奇含 AttackTrace 伤害 + 可选 RotateToTarget 面向硬直敌人）。⭐审查修订：**入场前段小无敌**——蒙太奇前段挂 AbilityWindow（WindowTag=`State.Invulnerable`），EndAbility 兜底移除；不给全程无敌（硬直结束第一帧敌人可能反手，前段保护足矣）。
+- 共享助手：`UZZZGameplayAbility` 加 `AZZZCombatEnemy* FindNearestEnemy(float Radius, FGameplayTag RequiredState = FGameplayTag())`（TActorIterator 过滤 hidden/Dead；RequiredState 非空时只返回携带该 tag 的最近敌人）。
+- 弹刀语义（⭐审查修订 2026-08-08，取舍显式标注）：切换时敌人攻击中 → **保证弹刀**（自动判定非精防）。**原型取舍：① 无精防判定窗口**——抬手第 1 帧与落刀前 1 帧按切换效果相同，且可零成本反复触发（精防窗口 + 窗口内接刀增伤 → **Phase 5**）；② **无资源消耗**——弹刀/突击不消耗任何点数（支援点数经济并入 **Phase 5** 资源系统一并设计）。本 Phase 交付的是"无条件格挡换人 + 敌人硬直惩罚"，**不是** ZZZ 式精防弹刀，验收预期按此。
+- 弹刀命中反馈（⭐审查修订）：反击命中走 Task 4 受击路径自带 `ApplyHitStop` 顿帧；Task 3c 的受击震屏挂点（敌人受击扣血 → SourceASC 执行 `GC_ZZZ_CameraShake`）自动覆盖弹刀，无需额外代码，验证项补确认。
+
+#### 5b. PC 切换重构（核心）
+
+**修改**：`ZZZ/Player/ZZZPlayerController.h/.cpp`
+
+- `SwitchToNextCharacter()` → `SwitchToCharacter(int32 Direction)`（+1/-1，负数归一化）；新增 `SwitchToPrevCharacter()`；`SwitchPrevAction`（Q 键）绑 Started。
+- 新配置：`AssistDefensiveAbilityClass`、`AssistOffensiveAbilityClass`、`TeamPanelWidgetClass`。
+- 流程（保留现有全部守卫逻辑——含 `IsSquadClassEliminated` 阵亡成员跳过，⭐审查修订 ⑨ 确认已覆盖；改动集中在后半）：
+  1. 候选选择（现有逻辑，Direction 参数化）
+  2. **自动判定**（⭐审查修订：状态优先级语义，非"最近再查状态"）：`FindNearestEnemy(ParryDetectRadius, Effect.Enemy.AttackWindow)` → 命中=弹刀（⭐设计变更 2026-08-09：弹刀窗口从 `State.Attacking` 全程改为 `Effect.Enemy.AttackWindow` 前摇段——与极限闪避共用同一黄闪同步窗口；攻击已出手/收招段切人 = 普通切换，更精准）；否则 `FindNearestEnemy(AssistDetectRadius, State.Staggered)` → 命中=突击；否则普通。两个半径独立配置（建议值：Parry 300 / Assist 600，BP 可调——弹刀只需覆盖敌人攻击范围 120 附近，突击可更远）。`State.Attacking` 保留：TryStartAttack 防重复攻击守卫 + `CancelAbilities(Ability.Attack.Enemy)` 定位目标，仅不再作为弹刀判定依据
+  3. 新成员显示+定位（现有）
+  4. 新成员 `CancelSwitchOut()`（若正在出场）
+  5. 旧成员 `PlaySwitchOut()`（不再立即隐藏）
+  6. `Possess(NextMember)` + `ConsumeBufferedInput()`（现有）
+  7. 弹刀/突击 → 新成员 ASC `TryActivateAbilityByClass(...)`；⭐审查修订：**返回 false 时回落普通切换表现**（能力激活失败如 Commit 不过/tag 阻塞 → 新角色正常站场，不干站）
+  8. `TeamPanel->RefreshSquad(this)`
+
+- **切换时序结论**：先 Possess 新角色，旧角色以未 Possess 状态播 SwitchOut 蒙太奇、**播完再隐藏**——控制权/相机/输入即刻跟随；旧角色动画由 AnimInstance 跟随 Actor Tick 走，与 Possession 无关（Pawn-ASC 持久化模型自然延伸）；新角色入场蒙太奇与旧角色 SwitchOut **并行** = ZZZ 换人视觉。持久化模型不破坏：成员不销毁、ASC 继续 tick、能力不取消（= 脱手技语义保留）。
+
+#### 5c. AZZZCharacter 收尾 API
+
+**修改**：`ZZZ/ZZZCharacter.h/.cpp`：`SwitchOutMontage` 配置 + `PlaySwitchOut()`（Montage_Play + OnMontageEnded → 隐藏+关碰撞）/ `CancelSwitchOut()`（**先清标志再 Montage_Stop**，否则 Interrupted 回调误隐藏已显示的角色）/ `IsPlayingSwitchOut()`。
+
+> ⭐审查修订（2026-08-08，Interrupted 竞态）：旧角色 SwitchOut 期间**仍留在场内且有碰撞**，若被敌人攻击触发受击蒙太奇打断 SwitchOut，`OnMontageEnded` 以 bInterrupted=true 触发 → 立即隐藏 = 旧角色凭空消失。**组合方案**：① `PlaySwitchOut()` 时 `AddLooseGameplayTag(State.Invulnerable)`——Task 3a 免伤拦截在扣血前短路，受击蒙太奇不会播，SwitchOut 不可被打断（隐藏+关碰撞时移除该 tag，LooseTag 手动清理）；② `OnMontageEnded` 的 Interrupted 分支同样走隐藏——真被打断也按退场处理，不留场内挡路。
+
+#### 5d. 资产
+
+- AM_SwitchOut：包装现成 `SwitchOut_Normal_Anim1`
+- AM_AssistDefensive / AM_AssistOffensive：占位=AM_BasicAttack_01（用户入场动画导入后替换）；防御版前段挂 AbilityWindow(CanParry)，两版攻击帧挂 AttackTrace
+- GA_AssistDefensive / GA_AssistOffensive：BP 子类
+- IA_ZZZSwitchPrev（Q 键）+ IMC 映射 + DA 条目（`Input.Switch.Prev`, bTriggerOnStarted=true）
+- **BP_Okuma_Third**：复制 BP_Okuma_Switch 换材质色调区分；SquadClasses=[BP_Okuma, BP_Okuma_Switch, BP_Okuma_Third]
+- BP_ZZZPlayerController：配 SwitchPrevAction / 两 Assist 类 / TeamPanel 类
+- 三个角色 BP DefaultAbilities 追加 GA_AssistDefensive、GA_AssistOffensive
+
+#### 5e. 脱手技并行执行验证场景（切换不 Cancel 旧能力）
+
+1. 普攻第 2 段中按 Space → 旧角色攻击蒙太奇播完（收刀→Idle），伤害 notify 仍生效（notify 经旧角色自己 ASC 施放 GE，与 Possession 无关）
+2. 闪避中按 Space → 闪避完成，无敌结束正常移除
+3. 连按 10 次切换 → 无崩溃、无 tag 残留（沿用原型验证法）
+4. 切换后旧角色受后台伤害 → 飘字正常（cue 经旧 ASC → PC 池）
+
+**验证**：PIE — 敌攻击中 Space=弹刀（新角色入场+反击+敌人被打断+**敌人进入硬直 Staggered**）；敌硬直中 Space=突击（追击命中）；闲时 Space=普通切换（SwitchOut 动画）；Q 反向；三人循环。⭐审查修订补充：**弹刀命中 → 敌人顿帧+震屏**（复用受击路径，确认 Task 3c 挂点生效）；**弹刀→敌人硬直→立即再按切换→变突击**（机制串联验证）；**弹刀后敌人不再立即出手**（硬直 Timer 期间）；阵亡成员被跳过（切不出尸体）。⭐审核建议：以上通过后加压力项——三人快速循环切换 10+ 次：`State.Player` 在每个成员 ASC 上正确维持；无 CameraShake 堆叠（连续完美闪避/受击时旧 Shake 未结束新 Shake 触发，必要时触发前 Stop 同 class）；**激活失败回落路径不崩**（压力循环天然覆盖）。
+
+---
+
+### Task 6 — TeamPanel
+
+**新建**：`ZZZ/UI/ZZZTeamPanelWidget.h/.cpp` + `ZZZ/UI/ZZZTeamPanelEntryWidget.h/.cpp`
+
+- Entry：`BindWidget` HPBar/NameText；`Init(Member, SlotIndex)` 绑 `GetHealthAttribute/MaxHealth` 的 `GetGameplayAttributeValueChangeDelegate`（设计文档 10.5：事件驱动不轮询）+ `RegisterGameplayTagEvent(State_Dead)` 灰显；Refresh 卸载 FDelegateHandle。
+- Panel：`BindWidget` SlotBox(HorizontalBox) + `EntryWidgetClass`；`RefreshSquad(AZZZPlayerController*)` 清空重建（RemoveFromParent 防委托泄漏）→ 遍历 `PC->GetSquadClasses()`。
+- PC 接线：⭐审查修订（2026-08-08）**override `OnPossess` → RefreshSquad**，替代延迟一帧——首次 Possess 与每次切换均覆盖，消除对帧时序的隐式依赖（第三人加入后时序场景变多）；BeginPlay 仅 CreateWidget+AddToViewport；每次 SwitchToCharacter 末尾 RefreshSquad 保留（同帧即时刷新）。
+- 资产：WBP_TeamPanel / WBP_TeamPanelEntry（HP+名字+阵亡态；能量属性 Phase 3 不建）。
+
+**验证**：PIE — 3 槽显示三人；受击实时更新；切换高亮跟随；阵亡 DOWN。
+
+---
+
+## 📌 待办交接（2026-08-09，会话切换）
+
+> 新会话从此继续。规则：**CLAUDE.md 规则 1 已更新——所有玩法 tag 逻辑禁用 `AddLooseGameplayTag`**（已改文档；代码迁移进行中，见下）。
+
+### 已完成（本会话，PIE 验证通过）
+- Task 3/3.5 收尾 + Task 4 C++：完美闪避判定前移（按下时窗口查询）、双减速（敌人 0.15 立即 + 玩家 0.5 notify 驱动延迟）、震屏 `GC_ZZZ_CameraShake`（含 R20 三处重写）、`TimeDilation` 桥接（敌人+玩家）、`ApplyHitStop`、敌人受击硬直、`GC_ZZZ_DamageNumber` 补 R20、`FindNearestEnemy` 助手。记录见上方 ⭐设计变更（2026-08-09）节。
+- Tag 已注册：`Effect.Enemy.AttackWindow`、`State.PerfectDodge`、`Effect.Ability.CanDashAttack`、`Event.Combat.DodgeSlowStart`（`ZZZGameplayTags.h/.cpp`）。
+
+### 进行中：冲刺攻击/闪避反击 + LooseTag→GE 迁移（被打断，代码未写）
+1. **新建** `Effects/ZZZStatusGameplayEffects.h/.cpp`：5 个 C++ GE 载体——`UZZZGameplayEffect_WindowTag`（Infinite）/`_Stagger`（Duration 0.35s）/`_Dead`（Infinite）/`_Stun`（Infinite）/`_Alive`（Infinite）。⚠ tag 一律**应用时 `DynamicGrantedTags`**（CDO 时序坑，照 `UZZZGameplayEffect_Faction` 模式）。
+2. **`AnimNotifyState_AbilityWindow`/`AnimNotifyState_InputWindow` GE 化**：NotifyBegin 施加窗口 GE（DynamicGrantedTags=WindowTag）并记 **per-owner 句柄 TMap<TWeakObjectPtr<AActor>, FActiveGameplayEffectHandle>**（多 actor 共享同蒙太奇/notify 实例），NotifyEnd 按 owner 移除。替代现 `AddLooseGameplayTag`。
+3. **`UZZZDodge`**：`State.PerfectDodge` 标志 → **Duration GE**（新 `PerfectDodgeEffect` TSubclassOf 配置，BP 资产 `GE_PerfectDodge_Status`：Duration **固定 0.5s** + TargetTags=State.PerfectDodge，**不用 SetByCaller**——玩家慢放会把真实时长拉长到 ~0.9s，窗口更宽容无害）；删 `AddLooseGameplayTag`；EndAbility 加兜底 `RemoveActiveEffectsWithGrantedTags(CanDashAttack)`。
+4. **`ZZZAttributeSet`**：`State.Staggered`（→`_Stagger` GE，删 Timer lambda）/`State.Dead`（→`_Dead`）/`State.Stun`（→`_Stun`）全改 GE 施加。
+5. **`ZZZCombatEnemy`**：`State.Alive` → `_Alive` GE。
+6. **`ZZZCharacter::Input_AbilityInputTagPressed`** 起手守卫：`IsAbilityActiveWithTag(Ability.Defense.Dodge) && ASC->HasMatchingGameplayTag(CanDashAttack)` → 跳过普攻起手（交给 GA_DashAttack/GA_DodgeCounter 的 AbilityTriggers 路由）。
+7. 构建 + 资产步骤（用户）：
+   - `GE_PerfectDodge_Status`（Duration 0.5s + TargetTags=State.PerfectDodge）
+   - **`GE_SlowMotion` Duration 改 0.3s**（补偿：0.3÷0.15=真实 2.0s——慢放会拉长 ASC 计时）；**`GE_PlayerSlowMotion` Duration 改 1.0s**（1.0÷0.5=真实 2.0s）
+   - `GA_DashAttack`（Trigger=Input.Attack + Required=CanDashAttack + **Blocked=State.PerfectDodge** + AM_DashAttack）；`GA_DodgeCounter`（Trigger=Input.Attack + Required=CanDashAttack+State.PerfectDodge + AM_DodgeCounter）
+   - `AM_DashAttack`/`AM_DodgeCounter` 占位 `AM_BasicAttack_01` + AttackTrace
+   - `AM_Dodge_Fwd/Back`：位移段挂 AbilityWindow（WindowTag=**CanDashAttack**）+ 位移末段 `AnimNotify_SendGameplayEvent`（`Event.Combat.DodgeSlowStart`，DodgeEnd notify 之前）
+   - 三角色 DefaultAbilities 追加 GA_DashAttack/GA_DodgeCounter
+   - PIE：普通闪避位移段按攻击→冲刺；完美闪避位移段按攻击→反击（慢放中）；窗口外按攻击→普攻不变
+
+### 后续（依赖顺序）
+- **Task #3**（`UZZZAssistDefensive`/`UZZZAssistOffensive` C++——弹刀已按 `Effect.Enemy.AttackWindow` 设计，含敌人 Staggered GE 化后改施加方式）+ **Task #4**（PC 切换重构 + SwitchOut API）→ **Task #5**（资产+验证）→ **Task #6**（TeamPanel）→ **Task #7**（`GC_DamageNumber` 重存，用户操作）。
+- 注意：弹刀/受击硬直现在统一用 `UZZZGameplayEffect_Stagger`（Duration 0.35s），不再 LooseTag+Timer；弹刀时若需更长硬直，在能力内配自己的 Stagger GE 或调整 Duration。
+
+---
+
+## 四、构建与验证
+
+```bash
+# 新增 UCLASS / 改 UPROPERTY 反射 → 必须完整构建 + 重启编辑器（UHT 重跑）
+"D:/Program Files/Epic Games/UE_5.8/Engine/Build/BatchFiles/Build.bat" ZZZCombatRemakeEditor Win64 Development -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
+```
+
+- 仅 .cpp/.h 成员级小改可 Live Coding（hot_reload）。
+- 每个 Task 完成即构建 + 按该 Task 验证点 PIE 手测，不跨 Task 堆积。
+- 资产编辑走编辑器（ue-mcp 的 blueprint/material/animation 通道），C++ 按 create_cpp_class → write → build 循环。
+- **Build.cs 无需改动**：WaitGameplayEvent / ApplyRootMotionConstantForce 内置 GameplayAbilities，CameraShakeBase / TActorIterator / UMG 均已声明。
+
+## 五、C++ 新建 vs BP 配置汇总
+
+| 项 | C++ | 仅 BP/资产 |
+|---|---|---|
+| Tag/属性/阵营标记 | 改 4 文件 | ini 一行 |
+| 蒙太奇基类重构 | 改 2 文件 | — |
+| UZZZEnemyAttack | 新建 1 | GA_EnemyAttack + AM_EnemyAttack + BP_EnemyTest_Manny |
+| UZZZDodge | 新建 1 | IA/IMC/DA + AM_Dodge + GA_Dodge + 角色配 |
+| Assist Defensive/Offensive | 新建 2 | GA×2 + AM×2 |
+| GC_ZZZ_CameraShake | 新建 1 | GC BP（复用 BP_CameraShake_Hit_Player）|
+| GE_SlowMotion | — | 纯 BP 资产 |
+| 敌人行为/硬直/时间桥接 | 改 3 文件 | BP_EnemyTest_Manny 数值 |
+| 切换重构/第三人 | 改 2 文件 | IA_ZZZSwitchPrev/IMC/DA/BP_Okuma_Third/PC 配置 |
+| TeamPanel | 新建 2 | WBP×2 |
+
+## 六、风险与坑（实施时逐条对照）
+
+1. **Triggered 语义**：Dodge/Switch 必须 Started（bTriggerOnStarted），否则按住连闪/连切（原型已验证过此坑）
+2. **LooseTag 残留**：AnimNotifyState 被打断可能不触发 NotifyEnd → 窗口 tag 由能力 EndAbility 兜底移除；State.Attacking/Invulnerable 一律能力管理
+3. **M1（Duration GE）**：TimeDilation 桥接必须走 ValueChangeDelegate，PostGameplayEffectExecute 不触发（设计文档 10.4）
+4. **Timer lambda 悬垂**：硬直/顿帧定时器捕获 TWeakObjectPtr，禁止裸指针
+5. **CancelSwitchOut 顺序**：先清标志再 Montage_Stop，否则 Interrupted 回调误隐藏新角色
+6. **PC BeginPlay 无 Pawn**：TeamPanel 首次刷新延迟一帧（伤害池同款时序先例）
+7. **动画骨架兼容**：占位动画必须珂蕾妲骨架；Mannequin 的 MM_Dash 不能用于 Okuma
+8. **PlayMontageAndWait 双回调**（BlendOut+Completed 各 End 一次）：引擎守卫，勿"修复"
+9. **Root Motion 与程序化位移互斥**：二选一；Root Motion 时蒙太奇内开启 Root Motion from Montage，收刀段不关（10.1/8.10 原则）
+10. **Hit Stop 与慢动作共享 CustomTimeDilation**：恢复值现读属性（属性为唯一真源），防覆盖 0.15 慢动作
+11. **弹刀打断时序**：AssistDefensive 先 Cancel 敌人攻击再播入场蒙太奇；敌人攻击 GA 必须有 AbilityTags=Ability.Attack.Enemy 才能被 CancelAbilities 定位
+12. **多敌边界**：切换判定按状态优先级取最近敌人（Attacking 优先于 Staggered，见 Task 5b）；完美闪避只慢攻击者；FindNearest* 一律过滤 hidden/State.Dead
+13. **弹刀取舍预期**（⭐审查修订）：无精防窗口 + 无资源消耗 + 可零成本反复触发 = 原型取舍，显式推迟 Phase 5（Task 5a 标注）；验收"弹刀手感"时按"无条件格挡换人"预期，不按 ZZZ 精防预期
+14. **SwitchOut 被打断竞态**（⭐审查修订）：旧角色 SwitchOut 期间挂 `State.Invulnerable` 防受击打断（免伤拦截在扣血前短路，受击蒙太奇不会播）；`OnMontageEnded` Interrupted 分支仍隐藏兜底（Task 5c）
+15. **5.8 API 事实（2026-08-09 Task 3 实施踩坑）**：① `AActor::SetCustomTimeDilation` 已移除（Actor.h 仅存 public 属性 `CustomTimeDilation`）——TimeDilation 桥接 / ApplyHitStop 直接属性赋值，勿用函数；② **UHT 禁止 UFUNCTION 参数为 struct 裸指针**（`const FGameplayEventData*` 报 "Inappropriate '*'"）——完美闪避监听弃用 `UAbilityTask_WaitGameplayEvent`（其 EventReceived 需 UFUNCTION 回调），改走基类 `GenericGameplayEventCallbacks` + `AddLambda`（非 UFUNCTION 成员函数 + lambda 转发）同款模式
+
+## 七、关键文件
+
+- `Source/ZZZCombatRemake/ZZZ/Abilities/ZZZGameplayAbility.h/.cpp`（蒙太奇样板上移，全部新 GA 的基座）
+- `Source/ZZZCombatRemake/ZZZ/Abilities/ZZZBasicAttack.h/.cpp`（重构消费）
+- `Source/ZZZCombatRemake/ZZZ/Attributes/ZZZAttributeSet.h/.cpp`（TimeDilation + 完美闪避/免伤/硬直/Hit Stop 触发点）
+- `Source/ZZZCombatRemake/ZZZ/Player/ZZZPlayerController.h/.cpp`（切换自动判定/三人循环/TeamPanel 接线中枢）
+- `Source/ZZZCombatRemake/ZZZ/Enemies/ZZZCombatEnemy.h/.cpp`（最小攻击行为 + TimeDilation 桥接 + Hit Stop）
+- `Source/ZZZCombatRemake/ZZZ/ZZZCharacter.h/.cpp`（输入门控扩展 + SwitchOut 接驳）
+- 新建：`ZZZ/Abilities/ZZZEnemyAttack`、`ZZZDodge`、`ZZZAssistDefensive`、`ZZZAssistOffensive`；`ZZZ/Cues/GC_ZZZ_CameraShake`；`ZZZ/UI/ZZZTeamPanelWidget`、`ZZZTeamPanelEntryWidget`

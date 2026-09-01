@@ -1,0 +1,170 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 🔴 项目方案文档（最高优先级）
+
+本项目有完整的架构设计方案，**所有开发工作必须优先遵循方案中的做法**：
+
+| 文档 | 路径 | 说明 | 加载策略 |
+|------|------|------|----------|
+| **架构设计文档** | `Docs/ZZZ-Combat-System-Design.md` | 完整设计：GAS 引入、4 模块拆分、类层级、GameplayTag 层级、实施路线图（Phase 1-6）、收刀动画与连段窗口机制、数据驱动设计、实现要点 | **🔴 每次必读** |
+| **审核报告** | `Docs/ZZZ-Combat-System-Design-Review.md` | 18 个问题的审核历史。所有 CRITICAL/HIGH 修复**已合并**到设计文档中（文档内 `⭐审查新增`/`H1修复` 等标记即为合并痕迹） | 可选参考（已过时） |
+
+> ⚠️ **新会话启动时必须先读取 `Docs/ZZZ-Combat-System-Design.md`。方案中的架构决策优先级高于本文件的摘要。** 审核报告无需加载——它的问题已经全部修进设计文档了。
+
+### 方案核心决策速查
+
+1. **GAS（Gameplay Ability System）是核心架构** — 替代模板代码的手动 AnimMontage + 接口驱动
+2. **4 模块拆分**: `ZZZCombatCore`（战斗核心）→ `ZZZCombatAI`（敌人 AI）→ `ZZZCombatUI`（战斗 UI）→ `ZZZCombatRemake`（主模块），可先精简为 2 模块
+3. **ASC 归属（2026-08-01 更新）**: ⭐ 玩家与敌人**统一为 Pawn-ASC**——每个角色 Pawn 自带 ASC + AttributeSet（`InitAbilityActorInfo(this, this)`），天然隔离独立血条/资源/技能冷却。~~原 PlayerState 方案~~（共享属性假设下选择，已随"独立属性"需求废弃，见设计文档 8.1）
+4. **Lyra 风格输入**: `UZZZInputConfig` DataAsset 将 InputAction 映射到 GameplayTag，通过 `ASC->HandleGameplayEvent()` + `TryActivateAbilitiesByTag()` 触发 Ability
+5. **伤害计算统一 ExecCalc**: `UZZZDamageExecution` 一次性计算 HP 伤害 + Daze 积蓄 + Anomaly 积蓄
+6. **增量替换策略**: 先建 ZZZ 模块（`Source/ZZZCombatRemake/ZZZ/`、`Content/ZZZ/`），不删除 Variant_Combat
+7. **动画方案**: AbilityTask 为主 + AnimNotify 为过渡。Phase 2 可用 AnimNotify 过渡，Phase 3+ 全面迁移到 AbilityTask
+8. **GameplayCue 管理视觉反馈**: 禁止在 PostGameplayEffectExecute 中直接 SpawnEmitter，必须走 `ExecuteGameplayCueOnActor`
+9. **审核 CRITICAL 问题**: C1-C4 必须在 Phase 1 编码前修复（ExecCalc 构造函数参数、属性访问器命名、捕获定义宏、Super 调用）
+10. **命名规范**: 用 `Elimination` 不用 `Kill`，用简洁 GAS 风格属性名（`Health` 而非 `CurrentHP`）
+11. **收刀动画 = 连段窗口**: 每段攻击 Montage 含 Attack + Recovery(收刀) 两段。收刀即 Combo Window（`AnimNotifyState_AbilityWindow` → `Effect.Ability.CanCombo` Tag）。连段过渡时**先激活下一段 Ability 再结束当前段**（新 Montage BlendIn 覆盖收刀，消除空窗帧）。收刀段全程保持 Root Motion。
+
+## UE5.8 Official Documentation Reference
+
+When working with Unreal Engine C++ APIs, always refer to the official Epic Games documentation:
+
+- **UE 5.8 C++ API Reference**: https://docs.unrealengine.com/5.8/en-US/API/
+- **UE 5.8 Programming Guide**: https://docs.unrealengine.com/5.8/en-US/programming-with-cplusplus-in-unreal-engine/
+- **UE 5.8 Gameplay Architecture**: https://docs.unrealengine.com/5.8/en-US/gameplay-architecture-in-unreal-engine/
+- **UE 5.8 Enhanced Input**: https://docs.unrealengine.com/5.8/en-US/enhanced-input-in-unreal-engine/
+- **UE 5.8 StateTree**: https://docs.unrealengine.com/5.8/en-US/state-tree-in-unreal-engine/
+- **UE 5.8 AI / Behavior Trees / EQS**: https://docs.unrealengine.com/5.8/en-US/behavior-trees-in-unreal-engine/
+- **UE 5.8 Animation / AnimNotifies**: https://docs.unrealengine.com/5.8/en-US/animation-notifications-in-unreal-engine/
+- **UE 5.8 UMG UI**: https://docs.unrealengine.com/5.8/en-US/umg-ui-designer-for-unreal-engine/
+- **UE 5.8 Gameplay Ability System**: https://docs.unrealengine.com/5.8/en-US/gameplay-ability-system-for-unreal-engine/
+
+Usage: When unsure about an API, use `WebFetch` to pull the relevant page from the above URLs, or use `WebSearch` with `site:docs.unrealengine.com/5.8` to find specific topics.
+
+## Project Overview
+
+Unreal Engine 5.8 C++ project — a third-person action game template with three distinct gameplay variants sharing core base classes. Default RHI is DX12 with SM6, Lumen GI, Substrate materials, and Ray Tracing enabled.
+
+## Build System
+
+This project uses a custom engine build (EngineAssociation GUID `{8A0643EF-4BB5-4974-2510-4EA2CE98E8A2}`), located at **`D:\Program Files\Epic Games\UE_5.8`** (UE 5.8). Standard UE build workflows apply:
+
+```bash
+# Generate Visual Studio project files (run from repo root)
+"D:/Program Files/Epic Games/UE_5.8/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" -ProjectFiles -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject" -Game -Engine="D:/Program Files/Epic Games/UE_5.8"
+
+# Build the editor target
+"D:/Program Files/Epic Games/UE_5.8/Engine/Build/BatchFiles/Build.bat" ZZZCombatRemakeEditor Win64 Development -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
+
+# Build the game target
+"D:/Program Files/Epic Games/UE_5.8/Engine/Build/BatchFiles/Build.bat" ZZZCombatRemake Win64 Development -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
+
+# Open the project in Unreal Editor
+"D:/Program Files/Epic Games/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" "D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
+```
+
+Compiled binaries go to `Binaries/`, intermediates to `Intermediate/`.
+
+## Architecture
+
+### Single Runtime Module
+
+All C++ code lives in one module: `Source/ZZZCombatRemake/` (`ZZZCombatRemake.Build.cs`). Key dependencies: `EnhancedInput`, `AIModule`, `StateTreeModule`, `GameplayStateTreeModule`, `UMG`. All classes use `UCLASS(abstract)` — the module provides base C++ classes, and concrete Blueprint subclasses in `Content/` wire up meshes, animations, and data assets.
+
+### Base Classes (module root)
+
+- **`AZZZCombatRemakeCharacter`** — abstract third-person character with spring-arm camera, Enhanced Input for Move/Look/Jump. Variants subclass this.
+- **`AZZZCombatRemakePlayerController`** — manages input mapping contexts and optional UMG mobile touch controls.
+- **`AZZZCombatRemakeGameMode`** — minimal GameModeBase subclass.
+
+All three have Blueprint redirects from the old `TP_ThirdPerson` template name.
+
+### Three Gameplay Variants (Template Code)
+
+> ⚠️ **These three variants are template code from project creation.** They serve as reference implementations but are **not** the target project. The actual project being developed is the **ZZZ module** (see below).
+
+The project was created from a template that includes three independent gameplay styles under `Source/ZZZCombatRemake/`:
+
+#### 模板变体一览（参考代码，勿修改）
+
+| 变体 | 一句话说明 | 记住这些名字就够 |
+|---|---|---|
+| `Variant_Combat/` | 第三人称近战示例（最复杂） | `ACombatCharacter`/`ACombatEnemy`（`ICombatAttacker`+`ICombatDamageable`）、StateTree AI（`CombatStateTreeUtility` 条件/任务）、AnimNotify 攻击判定（`AnimNotify_DoAttackTrace`/`CheckCombo`/`CheckChargedAttack`） |
+| `Variant_SideScrolling/` | 2D 横版平台跳跃 | `ASideScrollingCharacter`、`ASideScrollingNPC` + `FStateTreeSideScrolling*`、跳台/移动平台/拾取等 |
+| `Variant_Platforming/` | 平台跳跃 + 冲刺 | `APlatformingCharacter`(abstract)、`UAnimNotify_EndDash` |
+
+这些变体的"AnimNotify → 接口回调"模式正是 GAS 方案要替代的对象，作为反面对照阅读；其余细节见源码注释。
+
+### ZZZ Module (`ZZZ/`) — Target Project
+
+> ✅ **This is the actual project being developed.** The ZZZ module is a third-person action combat game built on **GAS (Gameplay Ability System)** that replaces the template variants' manual AnimMontage + interface-driven approach.
+
+**Core classes:**
+
+- **`AZZZCharacter`** — player character implementing `IAbilitySystemInterface`. Uses ASC to trigger abilities instead of manually playing montages. Input via Enhanced Input (`MoveAction`, `LookAction`, `AttackAction`). The `AttackAbility` is granted on possession and activated by input.
+- **`AZZZCombatEnemy`** — GAS-based enemy character.
+- **`AZZZPlayerController`** — player controller with input mapping.
+- **`AZZZPlayerState`** — player state hosting the ASC and AttributeSet.
+- **`AZZZGameMode`** — game mode.
+
+**GAS components:**
+
+- **`UZZZAttributeSet`** — attribute set (HP and combat stats).
+- **`UZZZAnimNotify_AttackTrace`** — AnimNotify that directly uses the ASC via `IAbilitySystemInterface` to find the attacker and apply a `UGameplayEffect` (configured via `TSubclassOf<UGameplayEffect> DamageEffect`) to hit targets. This decouples attack hit detection from the `ICombatAttacker` interface.
+
+**Key architectural differences from template code:**
+
+| | Template (Variant_Combat) | ZZZ (Target Project) |
+|---|---|---|
+| Animation driving | C++ manual `Montage_Play` | GAS Ability-managed montages |
+| Damage dealing | AnimNotify → interface call | AnimNotify → ASC → GameplayEffect |
+| Combo logic | C++ manual state machine | GAS Ability tasks / tags |
+| Coupling | Tight (`ICombatAttacker` interface) | Loose (ASC + GE decoupling) |
+
+### Content Organization
+
+`Content/` mirrors the source variants: `Variant_Combat/`, `Variant_Platforming/`, `Variant_SideScrolling/`, plus shared assets in `Characters/`, `Input/`, `ThirdPerson/`, `LevelPrototyping/`. The ZZZ module's content is under `Content/ZZZ/`.
+
+## Key Patterns
+
+### ZZZ Module (Target Project)
+
+- **GAS-driven combat** — Attacks are triggered via `UGameplayAbility` activated through the ASC. AnimMontages are managed by GAS Ability Tasks (e.g., `UAbilityTask_PlayMontageAndWait`), not manually played in C++.
+- **GameplayEffect-based damage** — Damage and other combat effects are delivered via `UGameplayEffect` applied through the ASC, decoupling hit detection (AnimNotify) from damage logic.
+- **Pawn-ASC（2026-08-01 起）** — ASC + AttributeSet 位于角色 Pawn（`InitAbilityActorInfo(this, this)`，BeginPlay 初始化），与 Possess 解耦；隐藏成员持续 Tick（冷却/后台 DoT）。`AZZZPlayerState` 仅保留为团队共享数据宿主（Phase 5 喧响值/Decibel）。
+- **AttributeSet** — `UZZZAttributeSet` defines all combat attributes (HP, etc.) using `FGameplayAttributeData`.
+- **Combo window via GameplayTag** — `UAnimNotifyState_AbilityWindow` manages `Effect.Ability.CanCombo` tag on ASC (Begin→Add, End→Remove). `UAbilityTask_WaitCombo` checks this tag via `HasMatchingGameplayTag()` each tick. Recovery (收刀) section of each attack montage carries the AbilityWindow — player input during recovery transitions to next attack without waiting for the full sheathing animation.
+
+### Template Variants (Reference Only)
+
+- **All C++ classes are `abstract`** — Blueprint assets in `Content/` provide concrete implementations with meshes, animation blueprints, and configured data.
+- **Interface-driven combat** — `ICombatAttacker` and `ICombatDamageable` decouple attack logic. Both player (`ACombatCharacter`) and AI (`ACombatEnemy`) implement both interfaces.
+- **AnimNotify-driven attack flow** — attacks use AnimNotifies embedded in montages to trigger trace checks and combo/charge logic at specific animation frames.
+- **StateTree over Behavior Trees** — enemy AI uses StateTree (with the `GameplayStateTree` plugin) instead of traditional Behavior Trees. Custom tasks and conditions are defined in `CombatStateTreeUtility`.
+
+### Shared
+
+- **Enhanced Input** — all input uses Enhanced Input (mapping contexts + input actions).
+- **Checkpoint respawn** — `ACombatPlayerController` monitors its possessed pawn for destruction and respawns a new one at the last checkpoint transform.
+
+## 实施经验与踩坑（2026-08-02，Phase 3 Task 0）
+
+> 完整记录见 `Docs/ZZZ-Combat-Phase3-Plan.md` Task 0 ⭐审核修复 节。以下为后续开发必须遵守的规则：
+
+1. **Tag 按生命周期分层管理，按场景选机制**：
+   - **持久身份 Tag**（无生命周期所有者，如 `State.Player`/`State.Enemy`）→ Infinite GE + 应用时 `Spec.Data->DynamicGrantedTags.AddTag(...)`（`UZZZGameplayEffect_Faction`，`ZZZ/Effects/`）
+   - **能力生命周期 Tag**（如 `State.Attacking`/`State.Invulnerable`）→ 能力 `ActivationOwnedTags`（引擎自动授予/移除，含被打断路径）
+   - **瞬态窗口 Tag**（如 `CanCombo`/`CanDodge`/`CanParry`）→ AnimNotifyState 管理 + 能力 EndAbility 兜底移除
+   🔴 **禁用规则（2026-08-09）**：**所有游戏玩法 tag 逻辑禁用 `AddLooseGameplayTag`**。仅允许在极少数不涉及网络预测、且生命周期完全不受能力系统控制的极端边缘情况（如临时 Editor 调试状态）使用。具体 tag 的添加方式（GE / ActivationOwnedTags 等）按场景选择，不在文档写死。
+2. **GE CDO 在模块加载期构造（早于 `StartupModule`）** — 构造函数内读 `FZZZGameplayTags::Get()` 得到无效 Tag，配进 CDO 的 Tag 会被静默丢弃；Tag 一律**应用时**解析。构造函数内创建子对象必须用**成员版 `CreateDefaultSubobject`**，`NewObject` 触发 Fatal。
+3. **UE 5.3+ GE 组件体系** — `GrantedTags` / `Application Tag Requirements` 等 GE 直接属性已废弃，改用 `GEComponents`：`UTargetTagsGameplayEffectComponent`（授予）/ `UTargetTagRequirementsGameplayEffectComponent`（过滤）。Task 3 的 `GE_SlowMotion` 照此配置。
+4. **GCN 的 `GameplayCueName` 是注册表镜像，引擎派生逻辑会擦除（2026-08-08，R20）** — CueManager 扫描（`BuildCuesToAddToGlobalSet`）**不加载资产**，从 FAssetData 读 `GameplayCueName`（AssetRegistrySearchable FName，`GameplayCueTag` 的镜像），None → `unmapped` 静默丢弃。引擎 `UGameplayCueNotify_Static::Serialize/PostInitProperties` 的资产名派生逻辑会在 CDO 构造/保存时把它擦成 None 且不恢复。**GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()`**，资产重新保存需先 set_property 标 dirty（save 不标 dirty 不落盘）。完整记录见设计文档 8.11 R20；`GC_ZZZ_DamageNumber` 待补同款重写（防重存复发）。
+
+## MCP 资产操作规则（2026-08-08）
+
+- **只读**：通过 ue-mcp 访问资产时，只允许**读取/检查**资产信息（`read`/`list`/`get_*`/`describe_*` 等查询操作）。
+- **禁写**：**永远不要**用 MCP 修改资产——包括但不限于 `set_property`/`save`/`create_*`/`duplicate`/`rename`/`delete`/`move`/`add_*`/`remove_*` 等任何写操作。BP 配置、Niagara 参数、蒙太奇通知、资产创建等一律由**人工在编辑器内操作**。
+- **输出指引**：需要修改资产时，向用户给出**操作步骤指导**（路径、面板、勾选项、参数值），由用户自己执行。
+- 诊断排查不受影响：读取资产状态、查日志、跑 PIE 验证均为只读行为。

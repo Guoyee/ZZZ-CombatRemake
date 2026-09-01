@@ -1,0 +1,669 @@
+# 四段普攻连段系统 — 实现方案
+
+> **项目**: ZZZCombatRemake (UE 5.8)
+> **依赖**: [ZZZ-Combat-System-Design.md](ZZZ-Combat-System-Design.md)（Phase 2 详细设计）
+> **日期**: 2026-07-21
+> **状态**: 待实施
+
+---
+
+## 一、背景与目标
+
+在现有 ZZZ GAS 基础设施（ASC on PlayerState、AttributeSet MVP、基础 Enhanced Input）之上，构建 4 段普攻连击系统。
+
+核心机制链：
+
+```
+死区（Attack Commitment）→ 预输入缓冲 → 收刀连段窗口 → 连段过渡
+```
+
+当前基线：
+- `GA_Attack` 是空壳（`PlayMontageAndWait` 无 Montage 连接）
+- 项目中无 GameplayTag C++ 定义、无 AnimNotifyState、无 AbilityTask
+- 已有 5 个珂蕾妲攻击动画（`/Game/Asset/珂蕾妲/`），但 Montage 上零 Notify
+
+---
+
+## 二、AnimNotify 方案决策
+
+### 问题：BeginInputBuffer 用 Blueprint AnimNotify 还是 C++？
+
+**决策：通用 C++ `UAnimNotify_SendGameplayEvent`**，带一个可配置的 `FGameplayTag EventTag` 属性。
+
+### 理由
+
+| 考量 | Blueprint Notify | C++ 通用 Notify |
+|------|-----------------|----------------|
+| 新增事件类型 | 每次新建 BP 子类 | 同一类，换 Tag |
+| 动画师改死区 | 改 BP 或重新编译 | 拖动 Notify 位置 |
+| 与现有代码一致 | 不一致（现有 `UZZZAnimNotify_AttackTrace` 是 C++） | 一致 |
+| 运行时开销 | BP VM 调用 | 原生 C++ |
+| 可调试性 | 需打开 BP 看 | `showdebug abilitysystem` 看 Tag |
+
+### 设计
+
+```cpp
+UCLASS(meta = (DisplayName = "Send Gameplay Event"))
+class UAnimNotify_SendGameplayEvent : public UAnimNotify
+{
+    UPROPERTY(EditAnywhere, Category = "Gameplay Event")
+    FGameplayTag EventTag;  // 动画师从下拉菜单选 Tag
+
+    UPROPERTY(EditAnywhere, Category = "Gameplay Event")
+    TObjectPtr<UObject> OptionalPayload = nullptr;  // 可选上下文（未来扩展）
+};
+```
+
+`Notify()` 实现：`Cast<IAbilitySystemInterface>(Owner)` → `ASC->HandleGameplayEvent(EventTag, &EventData)`。
+
+**死区配置方式**：动画师在 Montage Attack 段的伤害帧之后 2-3 帧放置此 Notify，设置 `EventTag = Event.AnimNotify.BeginInputBuffer`。要调整死区长度 → 拖动 Notify 时间轴位置即可，无需改代码。
+
+---
+
+## 三、文件清单
+
+### 3.1 新建文件（15 个）
+
+```
+Source/ZZZCombatRemake/ZZZ/
+├── ZZZGameplayTags.h              ← 集中 Tag 声明（UE_DECLARE_GAMEPLAY_TAG_EXTERN）
+├── ZZZGameplayTags.cpp            ← 集中 Tag 定义（UE_DEFINE_GAMEPLAY_TAG）
+├── ZZZInputConfig.h               ← Lyra 风格 IA→Tag DataAsset
+├── Animation/
+│   ├── AnimNotify_SendGameplayEvent.h    ← 通用"广播 GameplayEvent"Notify
+│   ├── AnimNotify_SendGameplayEvent.cpp
+│   ├── AnimNotifyState_AbilityWindow.h   ← CanCombo Tag 管理器（NotifyState）
+│   └── AnimNotifyState_AbilityWindow.cpp
+├── Abilities/
+│   ├── ZZZGameplayAbility.h       ← 项目 Ability 基类
+│   ├── ZZZGameplayAbility.cpp
+│   ├── ZZZBasicAttack.h           ← 连段 Ability（核心编排器）
+│   └── ZZZBasicAttack.cpp
+└── Tasks/
+    ├── AbilityTask_WaitInputBuffer.h    ← 事件驱动状态机（死区→监听→缓冲写入）
+    ├── AbilityTask_WaitInputBuffer.cpp
+    ├── AbilityTask_WaitCombo.h          ← 每帧 Tick 检查 CanCombo + Buffered
+    └── AbilityTask_WaitCombo.cpp
+```
+
+### 3.2 修改文件（2 个）
+
+```
+ZZZCharacter.h   ← 添加 InputConfig、DefaultAbilities、Input_AbilityInputTagPressed
+ZZZCharacter.cpp ← 重写 SetupPlayerInputComponent、AddCharacterAbilities
+```
+
+---
+
+## 四、实现顺序
+
+按依赖关系递增，每个阶段后可编译验证：
+
+```
+1. ZZZGameplayTags.h/.cpp           [无依赖 — 所有其他文件的基础]
+2. ZZZInputConfig.h                 [依赖 GameplayTags]
+3. AnimNotify_SendGameplayEvent     [依赖 GameplayTags]
+4. AnimNotifyState_AbilityWindow    [依赖 GameplayTags]
+5. AbilityTask_WaitInputBuffer      [依赖 GameplayTags]
+6. AbilityTask_WaitCombo            [依赖 GameplayTags]
+7. ZZZGameplayAbility               [依赖 GameplayTags]
+8. ZZZBasicAttack                   [依赖 1-7 全部]
+9. ZZZCharacter 修改                [依赖 InputConfig]
+```
+
+编译验证点：第 1 步后；第 8 步后；第 9 步后。
+
+---
+
+## 五、核心 GameplayTag 表
+
+| Tag 字符串 | C++ 常量名 | 用途 |
+|---|---|---|
+| `Input.Attack` | `Input_Attack` | Enhanced Input → ASC GameplayEvent |
+| `Input.Buffered.Attack` | `Input_Buffered_Attack` | WaitInputBuffer 写入，WaitCombo 消费 |
+| `Ability.Attack.Basic` | `Ability_Attack_Basic` | 标识普攻 Ability（AbilityTags + AbilityTriggers） |
+| `Effect.Ability.CanCombo` | `Effect_Ability_CanCombo` | AnimNotifyState_AbilityWindow 管理 |
+| `Event.AnimNotify.BeginInputBuffer` | `Event_AnimNotify_BeginInputBuffer` | AnimNotify_SendGameplayEvent 广播 |
+
+---
+
+## 六、关键类设计
+
+### 6.1 `UAnimNotify_SendGameplayEvent` — 通用事件广播
+
+```cpp
+UCLASS(meta = (DisplayName = "Send Gameplay Event"))
+class UAnimNotify_SendGameplayEvent : public UAnimNotify
+{
+    GENERATED_BODY()
+
+public:
+    virtual void Notify(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
+        const FAnimNotifyEventReference& EventReference) override;
+    virtual FString GetNotifyName_Implementation() const override;
+
+    // 动画师从下拉菜单选 Tag
+    UPROPERTY(EditAnywhere, Category = "Gameplay Event")
+    FGameplayTag EventTag;
+
+    // 可选上下文对象（未来扩展：如传伤害 GE 引用）
+    UPROPERTY(EditAnywhere, Category = "Gameplay Event")
+    TObjectPtr<UObject> OptionalPayload;
+};
+```
+
+`Notify()` 核心逻辑：
+
+```cpp
+void UAnimNotify_SendGameplayEvent::Notify(...)
+{
+    if (!MeshComp || !EventTag.IsValid()) return;
+
+    AActor* Owner = MeshComp->GetOwner();
+    if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Owner))
+    {
+        if (UAbilitySystemComponent* ASC = ASI->GetAbilitySystemComponent())
+        {
+            FGameplayEventData EventData;
+            EventData.Instigator = Owner;
+            EventData.OptionalObject = OptionalPayload;
+            ASC->HandleGameplayEvent(EventTag, &EventData);
+        }
+    }
+}
+```
+
+### 6.2 `UAnimNotifyState_AbilityWindow` — 连段窗口标记
+
+```cpp
+UCLASS(meta = (DisplayName = "Ability Window"))
+class UAnimNotifyState_AbilityWindow : public UAnimNotifyState
+{
+    GENERATED_BODY()
+
+public:
+    virtual void NotifyBegin(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
+        float TotalDuration, const FAnimNotifyEventReference& EventReference) override;
+    virtual void NotifyEnd(USkeletalMeshComponent* MeshComp, UAnimSequenceBase* Animation,
+        const FAnimNotifyEventReference& EventReference) override;
+
+    // 允许未来扩展不同窗口类型（如 Effect.Ability.CanParry）
+    UPROPERTY(EditAnywhere, Category = "Ability Window")
+    FGameplayTag WindowTag;
+};
+```
+
+实现：
+
+```
+NotifyBegin() → ASC->AddLooseGameplayTag(WindowTag)
+NotifyEnd()   → ASC->RemoveLooseGameplayTag(WindowTag)
+```
+
+动画师将此 NotifyState 拖到 Montage Recovery 段的完整时长上。蓝色条 = 连段可触发区间。
+
+### 6.3 `UAbilityTask_WaitInputBuffer` — 输入缓冲（事件驱动状态机）
+
+```
+┌─────────────────────────────────────────────────┐
+│              WaitInputBuffer 状态机               │
+│                                                  │
+│  Activate()                                      │
+│    → 注册两个 ASC GameplayEvent 回调:             │
+│       A) Event.AnimNotify.BeginInputBuffer       │
+│          → OnBufferReady()                       │
+│       B) Input.Attack                             │
+│          → OnInputPressed()                      │
+│    → bIsListening = false（初始死区）              │
+│                                                  │
+│  OnBufferReady(Tag)                              │
+│    → bIsListening = true   // 死区结束             │
+│                                                  │
+│  OnInputPressed(Tag)                             │
+│    if (!bIsListening) return;  // 死区，吞掉       │
+│    ASC->AddLooseGameplayTag(Input.Buffered.Attack)│
+│    OnInputReceived.Broadcast()                   │
+│                                                  │
+│  OnDestroy()                                     │
+│    → 清理两个 DelegateHandle                      │
+│    → ASC->RemoveLooseGameplayTag(Buffered)        │
+└─────────────────────────────────────────────────┘
+```
+
+关键设计决策：**不继承 `UAbilityTask_WaitGameplayEvent`**。原因是需要同时监听两个不同的 GameplayEvent（BeginInputBuffer + Input.Attack），它们的触发时机和语义完全不同。自注册两个 `GenericGameplayEventCallbacks` 更直接。
+
+### 6.4 `UAbilityTask_WaitCombo` — 连段检查（Tick 轮询）
+
+```cpp
+UCLASS()
+class UAbilityTask_WaitCombo : public UAbilityTask
+{
+    GENERATED_BODY()
+
+public:
+    UPROPERTY(BlueprintAssignable)
+    FWaitComboDelegate OnComboTriggered;
+
+    static UAbilityTask_WaitCombo* WaitCombo(
+        UGameplayAbility* OwningAbility,
+        FGameplayTag InComboWindowTag,
+        FGameplayTag InBufferedInputTag);
+
+    virtual void TickTask(float DeltaTime) override;
+
+protected:
+    FGameplayTag ComboWindowTag;    // Effect.Ability.CanCombo
+    FGameplayTag BufferedInputTag;  // Input.Buffered.Attack
+};
+```
+
+```cpp
+void UAbilityTask_WaitCombo::TickTask(float DeltaTime)
+{
+    UAbilitySystemComponent* ASC = GetTargetASC();
+    if (!ASC) return;
+
+    if (ASC->HasMatchingGameplayTag(ComboWindowTag)
+        && ASC->HasMatchingGameplayTag(BufferedInputTag))
+    {
+        // 消费缓冲 Tag（防止同一输入触发两次连段）
+        ASC->RemoveLooseGameplayTag(BufferedInputTag);
+        OnComboTriggered.Broadcast();
+    }
+}
+```
+
+选择 Tick 轮询而非事件驱动的原因：`HasMatchingGameplayTag` 对 Loose Tag 是 O(1) 哈希查找，每帧开销可忽略。事件驱动需要同时监听 CanCombo 和 Buffered 两个 Tag 的添加事件，实现复杂度更高且不带来实际收益。
+
+### 6.5 `UZZZGameplayAbility` — 项目 Ability 基类
+
+```cpp
+UCLASS(abstract)
+class UZZZGameplayAbility : public UGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    UZZZGameplayAbility();
+
+    // 便捷访问
+    UFUNCTION(BlueprintCallable, Category = "ZZZ|Ability")
+    UAbilitySystemComponent* GetZZZASC() const;
+
+    // 连段序号（1-based，由 BP 子类配置）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Combo")
+    int32 ComboIndex = 1;
+
+    // 下一段 Ability 类（末段为 null）
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Combo")
+    TSubclassOf<UZZZBasicAttack> NextComboAbility;
+
+    // 本段攻击 Montage
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Animation")
+    TObjectPtr<UAnimMontage> AttackMontage;
+};
+```
+
+### 6.6 `UZZZBasicAttack` — 连段 Ability（核心编排器）
+
+这是整个系统最核心的类，负责启动和协调三个 AbilityTask。
+
+```cpp
+UCLASS(abstract)
+class UZZZBasicAttack : public UZZZGameplayAbility
+{
+    GENERATED_BODY()
+
+public:
+    virtual void ActivateAbility(const FGameplayAbilitySpecHandle Handle,
+        const FGameplayAbilityActorInfo* ActorInfo,
+        const FGameplayAbilityActivationInfo ActivationInfo,
+        const FGameplayEventData* TriggerEventData) override;
+
+    virtual void EndAbility(const FGameplayAbilitySpecHandle Handle,
+        const FGameplayAbilityActorInfo* ActorInfo,
+        const FGameplayAbilityActivationInfo ActivationInfo,
+        bool bReplicateEndAbility, bool bWasCancelled) override;
+
+protected:
+    UFUNCTION()
+    void OnMontageCompleted();
+
+    UFUNCTION()
+    void OnComboTriggered();
+
+    void CheckComboTransition();
+
+    // 三个受管理的 Task
+    UPROPERTY()
+    TObjectPtr<UAbilityTask_PlayMontageAndWait> MontageTask;
+
+    UPROPERTY()
+    TObjectPtr<UAbilityTask_WaitInputBuffer> InputBufferTask;
+
+    UPROPERTY()
+    TObjectPtr<UAbilityTask_WaitCombo> ComboCheckTask;
+};
+```
+
+`ActivateAbility()` 实现：
+
+```cpp
+void UZZZBasicAttack::ActivateAbility(...)
+{
+    Super::ActivateAbility(Handle, ActorInfo, ActivationInfo, TriggerEventData);
+    CommitAbility(Handle, ActorInfo, ActivationInfo);
+
+    // 1. 播放 Montage
+    MontageTask = UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
+        this, NAME_None, AttackMontage, 1.0f, NAME_None, false);
+    MontageTask->OnCompleted.AddDynamic(this, &UZZZBasicAttack::OnMontageCompleted);
+    MontageTask->OnBlendOut.AddDynamic(this, &UZZZBasicAttack::OnMontageCompleted);
+    MontageTask->ReadyForActivation();
+
+    // 2. 启动输入缓冲（初始处于死区）
+    InputBufferTask = UAbilityTask_WaitInputBuffer::WaitInputBuffer(
+        this, ZZZGameplayTags::Input_Buffered_Attack);
+    InputBufferTask->ReadyForActivation();
+
+    // 3. 启动连段窗口检查
+    ComboCheckTask = UAbilityTask_WaitCombo::WaitCombo(
+        this,
+        ZZZGameplayTags::Effect_Ability_CanCombo,
+        ZZZGameplayTags::Input_Buffered_Attack);
+    ComboCheckTask->OnComboTriggered.AddDynamic(this, &UZZZBasicAttack::OnComboTriggered);
+    ComboCheckTask->ReadyForActivation();
+}
+```
+
+`CheckComboTransition()` — **关键顺序**（设计文档第 8.3 节）：
+
+```cpp
+void UZZZBasicAttack::CheckComboTransition()
+{
+    UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+    if (!ASC || !NextComboAbility) return;
+
+    // ⚠ 顺序至关重要:
+    // 1. 先激活下一段 Ability — 新 Montage BlendIn 覆盖当前收刀动画
+    ASC->TryActivateAbilityByClass(NextComboAbility);
+
+    // 2. 再结束当前 Ability — 下一段 Montage 已在 BlendIn 中
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+```
+
+**为什么先激活再结束**：如果先 `EndAbility` 再 `TryActivateAbilityByClass`，Montage BlendOut 和 BlendIn 之间会有 1-2 帧空窗，角色短暂回到 Idle 姿态再切下一段。先激活下一段，新 Montage 的 BlendIn 直接覆盖当前收刀段，无感知过渡。
+
+---
+
+## 七、Montage 时间轴结构
+
+```
+AM_BasicAttack_N（每个 Montage 一个 Attack + Recovery 双 Section）
+
+┌──── Section:Attack ────────────────────┬──── Section:Recovery ────────────┐
+│                                         │                                  │
+│  [死区 — WaitInputBuffer 忽略输入]       │  [AbilityWindow NotifyState]      │
+│                                         │  Effect.Ability.CanCombo ON       │
+│  ★ AnimNotify_AttackTrace               │                                  │
+│    (伤害检测帧)                          │  玩家在此时按键 →                  │
+│                                         │  Buffered.Attack 已写入           │
+│  ★ AnimNotify_SendGameplayEvent         │  ↓                               │
+│    Event.AnimNotify.BeginInputBuffer    │  WaitCombo::TickTask 检测到       │
+│    ← 死区结束，缓冲窗口从此帧开启         │  → CheckComboTransition()         │
+│                                         │  → 激活 GA_BasicAttack_N+1        │
+│                                         │                                  │
+│  Root Motion: ON ──────────────────────────────────────────────────────── │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**规则**：
+- 每段攻击一个独立 Montage（非单 Montage 多 Section 跳转）
+- Recovery 段全程嵌入 `AnimNotifyState_AbilityWindow`
+- `AnimNotify_SendGameplayEvent(BeginInputBuffer)` 在伤害帧 **之后** 2-3 帧放置
+- Root Motion 在整个 Montage（Attack + Recovery）期间全程开启
+- BlendIn 时长建议 0.05-0.1s（短到几乎感知不到但足以覆盖收刀）
+
+**不同攻击段的死区差异（纯动画侧配置）**：
+
+| Montage | BeginInputBuffer 位置 | 原因 |
+|---------|----------------------|------|
+| AM_BasicAttack_01 | 伤害帧后约 0.25s | 起手式，死区长 |
+| AM_BasicAttack_02 | 伤害帧后约 0.15s | 连段中，节奏加快 |
+| AM_BasicAttack_03 | 伤害帧后约 0.12s | 更紧凑 |
+| AM_BasicAttack_04 | 不放置（无下一段） | 末段 |
+
+所有调整通过拖动 Notify 时间轴完成，不涉及任何代码或 DataAsset 改动。
+
+---
+
+## 八、ZZZCharacter 修改
+
+### 8.1 头文件新增
+
+```cpp
+// ZZZCharacter.h 新增:
+
+class UZZZInputConfig;
+
+// 替代旧的 AttackAction + AttackAbility:
+UPROPERTY(EditDefaultsOnly, Category = "Input")
+TObjectPtr<UZZZInputConfig> InputConfig;
+
+UPROPERTY(EditDefaultsOnly, Category = "GAS")
+TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
+
+void Input_AbilityInputTagPressed(FGameplayTag InputTag);
+void Input_AbilityInputTagReleased(FGameplayTag InputTag);
+```
+
+### 8.2 实现文件修改
+
+```cpp
+void AZZZCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+    Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+    UEnhancedInputComponent* EI = CastChecked<UEnhancedInputComponent>(PlayerInputComponent);
+
+    // 保留 Move/Look 绑定
+    EI->BindAction(MoveAction, ETriggerEvent::Triggered, this, &AZZZCharacter::Move);
+    EI->BindAction(MouseLookAction, ETriggerEvent::Triggered, this, &AZZZCharacter::Look);
+    EI->BindAction(LookAction, ETriggerEvent::Triggered, this, &AZZZCharacter::Look);
+
+    // 数据驱动的能力输入绑定（替代旧的手写 AttackPressed）
+    if (InputConfig)
+    {
+        for (const FZZZInputAction& Action : InputConfig->AbilityInputActions)
+        {
+            EI->BindAction(Action.InputAction, ETriggerEvent::Triggered,
+                this, &AZZZCharacter::Input_AbilityInputTagPressed, Action.InputTag);
+            EI->BindAction(Action.InputAction, ETriggerEvent::Completed,
+                this, &AZZZCharacter::Input_AbilityInputTagReleased, Action.InputTag);
+        }
+    }
+}
+
+void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+
+    // 1. 广播 GameplayEvent（供 AbilityTask_WaitInputBuffer 等 Task 监听）
+    FGameplayEventData EventData;
+    EventData.Instigator = this;
+    ASC->HandleGameplayEvent(InputTag, &EventData);
+
+    // 2. 通过 Tag 激活匹配的 Ability（Ability.Triggers 中配置相同 Tag）
+    ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(InputTag));
+}
+
+void AZZZCharacter::Input_AbilityInputTagReleased(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+    // 通知 ASC 释放 Input Tag（蓄力攻击等需要 Released 事件的场景）
+    ASC->NotifyAbilityInputReleased(InputTag);
+}
+
+void AZZZCharacter::AddCharacterAbilities()
+{
+    // 批量授予 DefaultAbilities 中的所有 Ability
+    for (const TSubclassOf<UGameplayAbility>& AbilityClass : DefaultAbilities)
+    {
+        if (AbilityClass)
+        {
+            ASC->GiveAbility(FGameplayAbilitySpec(AbilityClass));
+        }
+    }
+}
+```
+
+**移除的代码**：
+- `AZZZCharacter::AttackPressed()` — 被 `Input_AbilityInputTagPressed` 替代
+- `AZZZCharacter::AttackAbility` (TSubclassOf) — 被 `DefaultAbilities` (TArray) 替代
+
+---
+
+## 九、Content 资产清单
+
+C++ 编译通过后，在编辑器中创建以下资产：
+
+### 9.1 DataAsset
+
+| 资产 | 路径 | 配置 |
+|------|------|------|
+| `DA_ZZZInputConfig` | `/Game/ZZZ/Data/` | `IA_ZZZAttack` → `Input.Attack` |
+
+### 9.2 GameplayAbility Blueprint（4 个）
+
+```
+Content/ZZZ/Abilities/
+├── GA_BasicAttack_01.uasset
+├── GA_BasicAttack_02.uasset
+├── GA_BasicAttack_03.uasset
+└── GA_BasicAttack_04.uasset
+```
+
+| 属性 | GA_01 | GA_02 | GA_03 | GA_04 |
+|------|-------|-------|-------|-------|
+| Parent Class | `UZZZBasicAttack` | ← 同 | ← 同 | ← 同 |
+| ComboIndex | 1 | 2 | 3 | 4 |
+| NextComboAbility | GA_02 | GA_03 | GA_04 | None |
+| AttackMontage | AM_BasicAttack_01 | AM_BasicAttack_02 | AM_BasicAttack_03 | AM_BasicAttack_04 |
+| AbilityTags | `Ability.Attack.Basic` | ← 同 | ← 同 | ← 同 |
+| AbilityTriggers[0].TriggerTag | `Input.Attack` | ← 同 | ← 同 | ← 同 |
+
+### 9.3 AnimMontage（4 个）
+
+用珂蕾妲现有动画资源创建 4 个 Montage，每个含双 Section + Notify 标记。
+
+### 9.4 BP_ZZZCharacter 更新
+
+- `InputConfig` = `DA_ZZZInputConfig`
+- `DefaultAbilities` = { `GA_BasicAttack_01`, `GA_BasicAttack_02`, `GA_BasicAttack_03`, `GA_BasicAttack_04` }
+
+---
+
+## 十、运行时完整流程
+
+```
+ 1. 玩家按左键
+    → Enhanced Input Triggered
+    → ZZZCharacter::Input_AbilityInputTagPressed(Input.Attack)
+    → ASC->HandleGameplayEvent(Input.Attack)           ← Task 可监听此事件
+    → ASC->TryActivateAbilitiesByTag({Input.Attack})   ← 触发 GA_BasicAttack_01
+
+ 2. GA_BasicAttack_01::ActivateAbility()
+    → CommitAbility()
+    → PlayMontageAndWait(AM_BasicAttack_01)
+    → WaitInputBuffer 启动 (bIsListening = false，死区)
+    → WaitCombo 启动 (每帧 Tick)
+
+ 3. Montage: Attack Section 播放中
+    → ★ AnimNotify_AttackTrace: SphereTrace → Apply GE_Damage
+    → ★ AnimNotify_SendGameplayEvent(Event.AnimNotify.BeginInputBuffer)
+      → ASC->HandleGameplayEvent(BeginInputBuffer)
+      → WaitInputBuffer::OnBufferReady() → bIsListening = true
+
+ 4. Montage: Recovery Section 开始
+    → ★ AnimNotifyState_AbilityWindow::NotifyBegin()
+      → ASC->AddLooseGameplayTag(Effect.Ability.CanCombo)
+
+ 5. 玩家在 Recovery 段内再次按攻击键
+    → ASC->HandleGameplayEvent(Input.Attack)
+    → WaitInputBuffer: bIsListening=true
+      → ASC->AddLooseGameplayTag(Input.Buffered.Attack)
+
+ 6. WaitCombo::TickTask (下一帧)
+    → HasTag(CanCombo)=true && HasTag(Buffered)=true
+    → ASC->RemoveLooseGameplayTag(Input.Buffered.Attack)  // 消费
+    → OnComboTriggered.Broadcast()
+
+ 7. GA_BasicAttack_01::OnComboTriggered() → CheckComboTransition()
+    → ① ASC->TryActivateAbilityByClass(GA_BasicAttack_02)  // 先激活
+    → ② EndAbility(GA_BasicAttack_01)                       // 再结束
+    → GA_BasicAttack_02 的 Montage BlendIn 覆盖 GA_01 收刀尾帧
+
+ 8. 重复 2-7，每次连段 ComboIndex 递增
+    直到 GA_04: NextComboAbility=null → Montage 自然结束 → EndAbility
+
+ 9. 如果玩家在 Recovery 段不按键
+    → AbilityWindow::NotifyEnd() → Remove CanCombo
+    → Montage 播完 → OnMontageCompleted → EndAbility
+    → 角色回到 Idle
+```
+
+---
+
+## 十一、UI 验证步骤
+
+按顺序验证，每步通过后再进入下一步：
+
+### Step 1: 编译
+C++ 编译通过，编辑器正常启动。
+
+### Step 2: Notify 可用
+打开任意 Montage，右键 → Add Notify，确认 "Send Gameplay Event"和 "Ability Window"出现在列表中。
+
+### Step 3: 单段播放
+按一次攻击键 → 角色播放 `AM_BasicAttack_01` → 自然结束回到 Idle。
+
+### Step 4: 死区验证
+在攻击段前部快速双击 → 不触发第二段。在伤害帧之后按键 → 触发第二段。
+
+### Step 5: 连段过渡无空窗
+连续按键 → 两段 Montage 过渡无 Idle 帧穿插。
+
+### Step 6: 4 段完整连击
+连续按 4 次 → 4 段流畅衔接。不按第 5 次 → 自然结束。
+
+### Step 7: Tag 调试
+控制台 `showdebug abilitysystem`，实时观察 Tag 变化：
+- `Effect.Ability.CanCombo` 在 Recovery 段出现和消失
+- `Input.Buffered.Attack` 在按键后出现、连段触发后消失
+
+---
+
+## 附录 A：与设计文档的对应
+
+| 本方案 | 设计文档引用 |
+|--------|------------|
+| GameplayTag 定义 | 设计文档 §6.4 |
+| AnimNotifyState_AbilityWindow | 设计文档 §8.2 |
+| WaitInputBuffer 事件驱动 | 设计文档 §8.3 + 附录 C.1 |
+| WaitCombo Tick 检查 | 设计文档 §8.10 |
+| CheckComboTransition 顺序 | 设计文档 §8.3（先激活后结束） |
+| Montage 双 Section 结构 | 设计文档 §8.10 |
+| 收刀段保持 Root Motion | 设计文档 §10.1 |
+| ZZZInputConfig DataAsset | 设计文档 Phase 1.5 |
+| ZZZCharacter 输入修改 | 设计文档 §6.2.1（H3 修复） |
+
+## 附录 B：潜在风险与缓解
+
+| 风险 | 缓解 |
+|------|------|
+| Montage BlendIn/BlendOut 参数不当 → 过渡抖动 | 先激活后结束的顺序保证 BlendIn 覆盖收刀；BlendIn 0.05-0.1s |
+| WaitCombo 触发两次（同一输入） | `Input.Buffered.Attack` 消费后立即 Remove，防重复 |
+| 死区过短 → 手感发飘 | 动画师拖动 Notify 位置调整，无需改 C++ |
+| ASC null（角色死亡等极端情况） | 所有 Notify 和 Task 内部 guard null ASC |
+| 第一段 Ability 被其他 Ability 打断 | GAS 自带 Ability 取消机制；WaitInputBuffer OnDestroy 清理 Tag |

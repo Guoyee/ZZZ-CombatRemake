@@ -1,0 +1,1492 @@
+# 绝区零核心战斗逻辑复刻 — 架构设计文档
+
+> **项目**: ZZZCombatRemake (UE 5.8)  
+> **目标**: 在现有 ThirdPerson 移动基础上，复刻《绝区零》(Zenless Zone Zero) 核心战斗逻辑  
+> **状态**: 已审查（Epic Developer Assistant 评审通过，整合改进建议）；实现对照更新 2026-08-01  
+> **日期**: 2026-07-21（更新：收刀动画 & 连段窗口机制）  
+> **审查者**: Epic Developer Assistant (多轮 AI 评审) + 代码实现对照审核（2026-08-01）
+
+---
+
+## 一、目标系统全景
+
+绝区零战斗系统的核心特征：
+
+| 系统 | 描述 |
+|------|------|
+| 基础攻击连段 | 3-5 段普攻连击，支持预输入缓冲 |
+| 特殊攻击 (EX) | 消耗能量释放强化攻击 |
+| 闪避 / 完美闪避 | 极限时机触发时空断裂（子弹时间） |
+| 支援技（弹刀/招架） | 防御型角色切换，完美时机触发弹反 |
+| 突击支援（Quick Assist） | 进攻型角色切换 |
+| 终结技 | 消耗大招能量释放 |
+| 连携技（Chain Attack） | 打空架势条后触发 3 人连携 |
+| 元素属性 | Fire / Ice / Electric / Physical / Ether 五种 |
+| 异常积蓄与爆发 | 元素属性积累到阈值触发异常效果（灼烧/冻结/感电/强击/侵蚀） |
+| 架势/失衡机制 | 不断攻击积累架势伤害，满后进入失衡状态 |
+| 三人编队切换 | 3 角色编队，战斗中可切换 |
+| 敌人 AI | 以骸敌人行为（巡逻/追击/攻击/闪避/受击硬直） |
+
+---
+
+## 二、现有项目基线
+
+> ⚠️ 本章是 Phase 1 启动前（2026-07）的基线快照，ZZZ 模块落地后已过时，保留作历史参考。当前结构见 2.1.1。
+
+### 2.1 源码结构
+
+```
+Source/ZZZCombatRemake/                     # 单模块，80 个 .h/.cpp 文件
+├── ZZZCombatRemakeCharacter.h              # 第三人称角色基类（抽象）
+├── ZZZCombatRemakeGameMode.h               # GameMode 基类
+├── ZZZCombatRemakePlayerController.h       # PlayerController 基类
+│
+├── Variant_Combat/                         # 现有战斗系统
+│   ├── CombatCharacter.h                   # 继承 ACharacter + 两个战斗接口
+│   ├── CombatPlayerController.h            # checkpoint 复活逻辑
+│   ├── CombatGameMode.h                    # 1-4 人本地多人
+│   ├── AI/
+│   │   ├── CombatEnemy.h                   # AI 敌人（StateTree 驱动）
+│   │   ├── CombatAIController.h
+│   │   ├── CombatEnemySpawner.h
+│   │   ├── CombatStateTreeUtility.h        # 自定义 StateTree 任务/条件
+│   │   └── EnvQueryContext_*.h             # EQS 上下文
+│   ├── Animation/
+│   │   ├── AnimNotify_DoAttackTrace.h      # 球体碰撞检测攻击
+│   │   ├── AnimNotify_CheckCombo.h         # 连段输入缓冲检测
+│   │   └── AnimNotify_CheckChargedAttack.h # 蓄力检测
+│   ├── Gameplay/
+│   │   ├── CombatActivationVolume.h
+│   │   ├── CombatCheckpointVolume.h
+│   │   ├── CombatDamageableBox.h
+│   │   ├── CombatDummy.h
+│   │   └── CombatLavaFloor.h
+│   ├── Interfaces/
+│   │   ├── CombatAttacker.h                # DoAttackTrace / CheckCombo / CheckChargedAttack
+│   │   ├── CombatDamageable.h              # ApplyDamage / HandleDeath / ApplyHealing / NotifyDanger
+│   │   └── CombatActivatable.h
+│   └── UI/
+│       └── CombatLifeBar.h
+│
+├── Variant_Platforming/                    # 平台跳跃（不相关）
+└── Variant_SideScrolling/                  # 横版卷轴（不相关）
+```
+
+### 2.1.1 当前源码结构（2026-08-01 快照）
+
+```
+Source/ZZZCombatRemake/                     # 单模块
+├── ZZZCombatRemakeCharacter.h / GameMode.h / PlayerController.h   # 最底层基类（抽象）
+├── Variant_*/                              # 模板参考代码（保留不动，见 CLAUDE.md 一览表）
+└── ZZZ/                                    # ⭐ 目标项目（GAS 战斗系统）
+    ├── ZZZCharacter.h/.cpp                 # 玩家角色：PlayerState-ASC + 输入→Tag 路由 + Move 打断
+    ├── Player/                             # ZZZPlayerState（ASC+AttributeSet 宿主）、ZZZPlayerController（输入缓冲）
+    ├── Game/                               # ZZZGameMode（PlayerStateClass）
+    ├── Input/                              # ZZZInputConfig（Lyra 风格 IA→Tag 映射 DataAsset）
+    ├── Tags/                               # ZZZGameplayTags（集中注册，模块 StartupModule 初始化）
+    ├── Attributes/                         # UZZZAttributeSet（Health/MaxHealth/Daze/MaxDaze/Attack/Defense/IncomingDamage）
+    ├── Abilities/                          # ZZZGameplayAbility 基类 / ZZZBasicAttack（连段）/ ZZZDamageExecution（ExecCalc）
+    ├── Tasks/                              # WaitInputBuffer / WaitCombo（事件驱动）/ RotateToTarget
+    ├── Animation/                          # AnimNotifyState_AbilityWindow / AnimNotifyState_InputWindow /
+    │                                       # AnimNotify_SendGameplayEvent / ZZZAnimNotify_AttackTrace
+    ├── Enemies/                            # AZZZCombatEnemy（ASC on Pawn，受击 MVP，无 AI）
+    └── Cues/                               # GC_ZZZ_DamageNumber + AZZZDamageNumberActor（飘字）
+```
+
+### 2.2 现有战斗机制
+
+```
+输入 → ComboAttackPressed()
+  → 播放 AnimMontage (AM_ComboAttack)
+    → AnimNotify_DoAttackTrace 触发
+      → SphereTrace 检测 ICombatDamageable
+        → ApplyDamage(Damage, Knockback, Launch)
+    → AnimNotify_CheckCombo 触发
+      → 检查缓冲输入时间 → ComboCount++ → 跳转下一 Montage Section
+  → Montage 结束 → AttackMontageEnded → 检查缓冲 → 连段继续或结束
+```
+
+### 2.3 当前局限
+
+> 以下局限描述的是模板基线（2026-07）。截至 2026-08-01：前 4 项（无 GAS / 无 Tag / 无属性 / 单角色）已由 ZZZ 模块解决；第 5 项（BP_Okuma 接入战斗基类）已在 ZZZ 模块内实现（BP_Okuma 为玩家角色）；第 6 项（AI）为 Phase 6 工作。
+
+| 问题 | 说明 |
+|------|------|
+| 无 GAS | 使用手动接口 + float HP，不适合 ZZZ 的复杂状态交互 |
+| 无 GameplayTag | 无法用 Tag 驱动状态（闪避/无敌/霸体/元素反应） |
+| 无属性/异常 | 没有元素属性框架 |
+| 单角色 | 无编队/切换概念 |
+| BP_Okuma 继承 Character | 未接入战斗系统（需改为战斗基类） |
+| AI 简单 | 只有 Combo/Charged/Face/WaitForLand 等基础任务 |
+
+---
+
+## 三、核心决策：引入 GAS
+
+### 3.1 为什么是 GAS
+
+| ZZZ 需求 | GAS 映射 |
+|-----------|----------|
+| 普攻 / 特攻 / 终结技 | `UGameplayAbility` 子类，通过 Input Tag 触发 |
+| 元素属性 + 异常积蓄 | `UGameplayEffect` + `FGameplayTag` 层级 |
+| HP / Energy / Daze / ATK / DEF | `UAttributeSet`，用 `FGameplayAttribute` 绑定 |
+| 完美闪避 → 子弹时间 | `FGameplayTag` 标记闪避窗口，`UGameplayEffect` 设置全局时间膨胀 |
+| 弹刀（招架） | `UGameplayAbility` 带 `ActivationBlockedTags` / `ActivationRequiredTags` |
+| 连携技 | `UGameplayAbility` + `UAbilityTask` 序列，等待队友动画完成 |
+| 僵直/霸体/无敌 | `FGameplayTag` 状态机：`State.CrowdControl.Staggered` / `State.Immunity.All` |
+| 敌人 AI 状态 | `FGameplayTag` 可直接被 StateTree 条件读取 |
+
+### 3.2 当前过渡方案
+
+不会一次性重写全部。策略是**增量替换**：
+
+1. 新增 GAS 基础设施（不破坏现有 Variant_Combat）
+2. 新建 `Content/ZZZ/` 目录作为开发主战场
+3. 现有 `ICombatAttacker` → `UGameplayAbility` 逻辑复用，AnimNotify 逻辑逐步迁移到 `UAbilityTask`
+4. `Variant_Combat/` 保留不动，作为参考和回滚基线
+
+---
+
+## 四、推荐模块拆分
+
+当前单模块 → 拆为 **4 个模块**：
+
+### 4.1 模块架构图
+
+```
+ZZZCombatRemake (主模块)
+├── 依赖 ZZZCombatCore
+├── 依赖 ZZZCombatAI
+├── 依赖 ZZZCombatUI
+│
+├── ZZZCombatRemakeCharacter.h     # 保留，最底层基类
+├── ZZZCombatRemakeGameMode.h
+├── ZZZCombatRemakePlayerController.h
+└── ZZZCombatRemake.Build.cs       # 含 GameplayAbilities/GameplayTags
+
+ZZZCombatCore (战斗核心模块)
+├── ZZZAbilitySystemComponent.h    # 自定义 ASC
+├── ZZZAttributeSet.h              # 属性集
+├── ZZZGameplayTags.h              # 集中管理 GameplayTag
+├── ZZZDamageExecution.h           # 伤害计算 Execution (HP+Daze+Anomaly 统一)
+├── ZZZInputConfig.h               # Lyra 风格 IA→GameplayTag 映射 DataAsset
+├── ZZZCombatDirector.h            # 连携技协调器 (GameState 子组件)
+├── Abilities/
+│   ├── ZZZGameplayAbility.h       # 战斗基类 Ability
+│   ├── ZZZBasicAttack.h           # 普攻连段
+│   ├── ZZZSpecialAttack.h         # EX 特攻
+│   ├── ZZZUltimate.h              # 终结技
+│   ├── ZZZDodge.h                 # 闪避/完美闪避
+│   ├── ZZZAssistDefensive.h       # 弹刀
+│   ├── ZZZAssistOffensive.h       # 突击支援
+│   └── ZZZChainAttack.h           # 连携技
+├── Tasks/
+│   ├── AbilityTask_DoTrace.h      # 攻击碰撞检测（替代 AnimNotify）
+│   ├── AbilityTask_WaitInputBuffer.h # 输入缓冲监听（ZZZ 手感核心）
+│   ├── AbilityTask_WaitCombo.h    # 连段窗口检测
+│   └── AbilityTask_ChainCamera.h  # 连携技镜头
+├── Animation/
+│   └── AnimNotifyState_AbilityWindow.h # 连段可触发窗口 NotifyState
+├── Effects/
+│   ├── GE_Damage.h                # 统一伤害 GE
+│   ├── GE_AnomalyBuildup.h        # 异常积蓄
+│   └── GE_SlowMotion.h            # 子弹时间（CustomTimeDilation）
+├── Attributes/
+│   └── ZZZAttributeSet.h          # HP/Energy/Daze/ATK/DEF/Anomaly
+└── Interfaces/
+    ├── ZZZCombatInterface.h       # 统一战斗接口
+    └── ZZZElementInterface.h      # 元素交互接口
+
+ZZZCombatAI (敌人 AI 模块)
+├── ZZZCombatEnemy.h               # 从 Variant_Combat 迁移并升级
+├── ZZZCombatAIController.h        # StateTree 驱动
+├── StateTree/
+│   ├── ZZZCombatStateTreeUtility.h  # 升级版 StateTree 任务/条件（可读 GAS Tag）
+│   └── ST_ZZZEnemy.uasset          # 新 StateTree 资产
+├── EQS/
+│   ├── EnvQueryContext_Player.h
+│   └── EnvQueryContext_Danger.h
+└── Spawning/
+    └── ZZZEnemySpawner.h          # 波次 + 编队管理
+
+ZZZCombatUI (战斗 UI 模块)
+├── ZZZHUD.h                       # 合成 HUD（基于 UMG）
+├── ZZZTeamPanel.h                 # 三人小队面板（HP/能量/头像）
+├── ZZZDamageNumber.h              # 飘字伤害
+└── ZZZCrosshair.h                 # 锁定指示
+```
+
+> **精简方案**：如果 4 模块过多，可先合并为 2 个——`ZZZCombatRemake`（主+AI+UI）+ `ZZZCombatCore`（GAS 战斗核心），后续再拆分。
+
+### 4.2 Build.cs 依赖变更（H4 修复：补全子模块依赖）
+
+**主模块** `ZZZCombatRemake.Build.cs`:
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput",
+    "AIModule", "StateTreeModule", "GameplayStateTreeModule", "UMG", "Slate",
+    // 新增 GAS 依赖
+    "GameplayAbilities",
+    "GameplayTags",
+    "GameplayTasks"
+});
+```
+
+**战斗核心模块** `ZZZCombatCore.Build.cs`:
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core",
+    "CoreUObject",
+    "Engine",
+    "GameplayAbilities",   // Ability / AbilityTask / ExecCalc
+    "GameplayTags",        // GameplayTag 层级定义
+    "GameplayTasks"        // AbilityTask 基类
+});
+```
+
+**AI 模块** `ZZZCombatAI.Build.cs`:
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core", "CoreUObject", "Engine",
+    "AIModule", "StateTreeModule", "GameplayStateTreeModule",
+    "GameplayAbilities", "GameplayTags",  // StateTree 读取 GAS Tag/Attribute
+    "ZZZCombatCore"                        // 依赖 Core 模块的类型
+});
+```
+
+**UI 模块** `ZZZCombatUI.Build.cs`:
+```csharp
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core", "CoreUObject", "Engine",
+    "UMG", "Slate",
+    "GameplayAbilities", "GameplayTags",  // ASC 属性变化绑定
+    "ZZZCombatCore"
+});
+```
+
+---
+
+## 五、Content 目录规划
+
+```
+Content/
+├── ZZZ/                                    # 新建，绝区零战斗内容根目录
+│   ├── Characters/
+│   │   ├── Player/
+│   │   │   ├── BP_ZZZCharacter             # 带 ASC + AttributeSet 的角色 BP
+│   │   │   └── ABP_ZZZCharacter            # 动画蓝图
+│   │   └── Enemies/
+│   │       ├── BP_Ethan_Melee              # 近战以骸
+│   │       ├── BP_Ethan_Ranged             # 远程以骸
+│   │       └── BP_Ethan_Elite              # 精英/Boss
+│   │
+│   ├── Abilities/
+│   │   ├── GA_BasicAttack_01               # 普攻第 1 段
+│   │   ├── GA_BasicAttack_02               # 普攻第 2 段...
+│   │   ├── GA_SpecialAttack                # EX 特攻
+│   │   ├── GA_Ultimate                     # 终结技
+│   │   ├── GA_Dodge                        # 闪避
+│   │   ├── GA_AssistDefensive              # 弹刀
+│   │   ├── GA_AssistOffensive              # 突击支援
+│   │   └── GA_ChainAttack                  # 连携技
+│   │
+│   ├── Effects/
+│   │   ├── GE_Damage_Physical              # 物理伤害
+│   │   ├── GE_Anomaly_Fire                 # 火属性异常积蓄
+│   │   ├── GE_Anomaly_Ice                  # 冰属性异常积蓄
+│   │   └── GE_StunBuildup                  # 架势伤害积蓄
+│   │
+│   ├── Input/
+│   │   ├── IMC_ZZZ                         # 主输入映射
+│   │   └── Actions/
+│   │       ├── IA_Attack                   # 普攻
+│   │       ├── IA_SpecialAttack            # 特攻
+│   │       ├── IA_Dodge                    # 闪避
+│   │       ├── IA_Switch_Next              # 切换下一个
+│   │       ├── IA_Switch_Prev              # 切换上一个
+│   │       └── IA_Ultimate                 # 终结技
+│   │
+│   ├── UI/
+│   │   ├── WBP_ZZZHUD                      # 战斗 HUD
+│   │   ├── WBP_TeamPanel                   # 三人面板
+│   │   └── WBP_DamageNumber                # 飘字组件
+│   │
+│   ├── AI/
+│   │   ├── ST_ZZZEnemy_Melee               # 近战敌人 StateTree
+│   │   └── EQS_ZZZ_*                       # EQS 查询
+│   │
+│   ├── Levels/
+│   │   └── Lvl_ZZZ_Arena                   # 战斗测试关卡
+│   │
+│   └── Data/
+│       ├── DA_CharacterStats               # 角色数值 DataAsset
+│       ├── DA_EnemyStats                   # 敌人数值 DataAsset
+│       ├── DT_AbilityConfig                # 技能参数 DataTable
+│       └── DT_ElementReaction              # 元素反应表 DataTable
+│
+├── Variant_Combat/                         # 保留，历史参考
+├── Variant_Platforming/                    # 保留
+├── Variant_SideScrolling/                  # 保留
+└── Asset/                                  # 保留（珂蕾妲 / 怪物资源）
+```
+
+---
+
+## 六、C++ 类层级设计
+
+### 6.1 角色继承链
+
+```
+ACharacter
+├── AZZZCombatRemakeCharacter (已存在，保留为最底层基类)
+│   └── AZZZCharacter (新建 — 集成 ASC + AttributeSet)
+│       ├── > BP_ZZZCharacter (Blueprint 子类)
+│       │   ├── 珂蕾妲 (套用 BP_Okuma 的网格/动画，重新绑定到新基类)
+│       │   ├── 安比
+│       │   ├── 比利
+│       │   └── ...
+│       │
+│       └── AZZZCombatEnemy (新建 — 敌人基类)
+│           ├── > BP_Ethan_Melee
+│           ├── > BP_Ethan_Ranged
+│           └── > BP_Ethan_Elite
+```
+
+### 6.2 Ability 继承链
+
+```
+UGameplayAbility
+└── UZZZGameplayAbility (新建 — 项目战斗 Ability 基类)
+    ├── UZZZBasicAttack        (普攻基础类 — 管理连段计数和预输入)
+    │   ├── > GA_BasicAttack_01
+    │   └── > GA_BasicAttack_02
+    ├── UZZZSpecialAttack      (特攻基础类 — 消耗能量)
+    ├── UZZZUltimate           (终结技 — 消耗 Decibel 值)
+    ├── UZZZDodge              (闪避 — 完美闪避判定窗口)
+    ├── UZZZAssistDefensive    (弹刀 — 招架窗口 + 反击)
+    ├── UZZZAssistOffensive    (突击支援)
+    └── UZZZChainAttack        (连携技 — 可被 Chain 系统调度)
+```
+
+### 6.2.1 AZZZCharacter — ASC 初始化 ⭐ 审查新增（2026-08-01 更新为 Pawn-ASC）
+
+核心要点：**ASC 归属于 Pawn**（8.1 决策变更，2026-08-01）——角色 Pawn 在构造函数中自建 ASC + AttributeSet，`BeginPlay` 时 `InitAbilityActorInfo(this, this)` 一次性完成，**与 Possess 完全解耦**，与 `AZZZCombatEnemy` 模式统一。`AZZZPlayerState` 保留为**团队共享数据宿主**（未来承载喧响值/Decibel，Phase 5），不再持有 ASC/AttributeSet。
+
+> **输入路由注意（实现对照 2026-08-01）**: `Input_AbilityInputTagPressed` 已增加 tag 过滤——仅 `Input.Attack` 触发起手攻击（`TryActivateAbilityByClass`），其余输入 tag（如 `Input.Switch.Next`）只广播 GameplayEvent，不触发攻击。起手门控改为查 active instance（`IsBasicAttackActive()`），替换原恒真的 LooseTag 检查。
+
+```cpp
+// ZZZCharacter.cpp — 关键实现（当前代码，Pawn-ASC）
+AZZZCharacter::AZZZCharacter()
+{
+    // ASC 必须随 Actor Tick 推进 Duration GE（冷却/后台 DoT）——
+    // 组件 Tick 依赖 Owner Actor 的 Tick
+    PrimaryActorTick.bCanEverTick = true;
+
+    ASC = CreateDefaultSubobject<UAbilitySystemComponent>(TEXT("ASC"));
+    AttributeSet = CreateDefaultSubobject<UZZZAttributeSet>(TEXT("AttributeSet"));
+    // ...camera/movement 组件...
+}
+
+void AZZZCharacter::BeginPlay()
+{
+    Super::BeginPlay();
+
+    // 单机：Owner == Avatar == this；隐藏成员从生成起即完整初始化
+    ASC->InitAbilityActorInfo(this, this);
+    AddCharacterAbilities();  // 按 class 去重（持久化成员被反复 Possess）
+}
+
+// 切换（PC::SwitchToNextCharacter）只做物理切换：隐藏旧 + 显示新 + Possess。
+// 不 CancelAllAbilities、不停蒙太奇——旧角色由自己的 ASC 继续驱动
+// （脱手技/后台 DoT 并行执行）。仅清空 PC 输入缓冲。
+
+void AZZZCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+    Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+    UEnhancedInputComponent* EI = CastChecked<UEnhancedInputComponent>(PlayerInputComponent);
+    for (const FZZZInputAction& Action : InputConfig->AbilityInputActions)
+    {
+        EI->BindAction(Action.InputAction, ETriggerEvent::Triggered,
+            this, &AZZZCharacter::Input_AbilityInputTagPressed, Action.InputTag);
+        EI->BindAction(Action.InputAction, ETriggerEvent::Completed,
+            this, &AZZZCharacter::Input_AbilityInputTagReleased, Action.InputTag);
+    }
+}
+
+// ⭐ H3 修复：补全 ASC GameplayEvent 广播链路（最关键的缺失步骤）
+void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+
+    // 1. 发送 GameplayEvent（供 AbilityTask_WaitInputBuffer 等 Task 监听）
+    FGameplayEventData EventData;
+    EventData.Instigator = this;
+    ASC->HandleGameplayEvent(InputTag, &EventData);
+
+    // 2. 通过 Tag 尝试激活匹配的 Ability（Ability.Trigger 中配置相同 Tag）
+    ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(InputTag));
+}
+
+void AZZZCharacter::Input_AbilityInputTagReleased(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+
+    // 通知 ASC 释放对应的 Input Tag
+    // 用途（M5）：蓄力攻击通过 Released 事件检测蓄力时长并决定释放等级
+    ASC->NotifyAbilityInputReleased(InputTag);
+}
+```
+```
+
+### 6.3 AttributeSet 设计 ⭐ 更新
+
+```cpp
+// ZZZAttributeSet.h
+#pragma once
+#include "CoreMinimal.h"
+#include "AttributeSet.h"
+#include "AbilitySystemComponent.h"
+#include "ZZZAttributeSet.generated.h"
+
+// 标准宏 — 自动生成 Getter/Setter/Initter
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
+    GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
+    GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
+
+UCLASS()
+class ZZZCOMBATCORE_API UZZZAttributeSet : public UAttributeSet
+{
+    GENERATED_BODY()
+
+public:
+    UZZZAttributeSet();
+
+    // === 核心属性 ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Vital")
+    FGameplayAttributeData Health;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Health);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Vital")
+    FGameplayAttributeData MaxHealth;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, MaxHealth);
+
+    // === 能量（EX 特攻 / 终结技消耗） ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Resource")
+    FGameplayAttributeData Energy;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Energy);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Resource")
+    FGameplayAttributeData MaxEnergy;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, MaxEnergy);
+
+    // === 架势 / 失衡（Stun 机制核心） ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Combat")
+    FGameplayAttributeData Daze;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Daze);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Combat")
+    FGameplayAttributeData MaxDaze;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, MaxDaze);
+
+    // === 战斗数值 ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Combat")
+    FGameplayAttributeData Attack;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Attack);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Combat")
+    FGameplayAttributeData Defense;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Defense);
+
+    // === 元素异常 ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Anomaly")
+    FGameplayAttributeData AnomalyMastery;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, AnomalyMastery);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Anomaly")
+    FGameplayAttributeData AnomalyProficiency;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, AnomalyProficiency);
+
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Anomaly")
+    FGameplayAttributeData AnomalyBuildup;  // 目标异常积蓄进度（受击方）
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, AnomalyBuildup);
+
+    // === Meta Attribute：传入伤害（ExecCalc 计算，PostGameplayEffectExecute 消费并归零） ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Meta")
+    FGameplayAttributeData IncomingDamage;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, IncomingDamage);
+
+    // === 时间桥接（H1 修复：GE 修改此属性 → PostGameplayEffectExecute 同步到 AActor::CustomTimeDilation） ===
+    UPROPERTY(BlueprintReadOnly, Category = "Attributes|Time")
+    FGameplayAttributeData TimeDilation;
+    ATTRIBUTE_ACCESSORS(UZZZAttributeSet, TimeDilation);
+
+    // === 生命/失衡临界检测 ===
+    virtual void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data) override;
+};
+```
+
+> **命名规范**: 属性使用简洁的 GAS 风格命名（`Health` 而非 `CurrentHP`），通过 `ATTRIBUTE_ACCESSORS` 宏自动生成标准访问器。`IncomingDamage` 作为 Meta Attribute 在 `PostGameplayEffectExecute` 中消费后自动归零。
+
+### 6.4 GameplayTag 层级
+
+```
+Ability.Attack.Basic           # 普攻
+Ability.Attack.Special         # 特攻 (EX)
+Ability.Attack.Ultimate        # 终结技
+Ability.Defense.Dodge           # 闪避
+Ability.Defense.Dodge.Perfect   # 完美闪避
+Ability.Defense.Assist          # 弹刀
+Ability.Switch.Quick            # 突击支援
+Ability.ChainAttack             # 连携技
+
+State.Alive                     # 存活
+State.Dead                      # 死亡
+State.Staggered                 # 硬直
+State.Invulnerable              # 无敌（闪避/弹刀窗口）
+State.SuperArmor                # 霸体
+State.Stun                      # 失衡
+State.SlowMotion                # 时空断裂
+State.IgnoreInput               # 忽略输入（连携演出中非活跃角色）
+State.Player                    # 玩家角色标记（CustomTimeDilation 豁免）
+State.Enemy                     # 敌人标记（CustomTimeDilation 目标）
+
+Element.Fire                    # 火
+Element.Ice                     # 冰
+Element.Electric                # 电
+Element.Physical                # 物理
+Element.Ether                   # 以太
+
+Anomaly.Fire.Burn               # 灼烧
+Anomaly.Ice.Freeze              # 冻结
+Anomaly.Electric.Shock          # 感电
+Anomaly.Physical.Assault        # 强击
+Anomaly.Ether.Corruption        # 侵蚀
+
+Team.Slot.1 / 2 / 3             # 编队位
+
+Input.Attack                    # 普攻输入
+Input.Special                   # 特攻输入
+Input.Dodge                     # 闪避输入
+Input.Switch.Next / Prev        # 切换输入
+Input.Ultimate                  # 终结技输入
+Input.Buffered.Attack           # 已缓冲的普攻输入（UAbilityTask_WaitInputBuffer 存入）
+Input.Buffered.Special          # 已缓冲的特攻输入
+
+Event.Combat.Hit                # 命中
+Event.Combat.Elimination        # 消灭（触发 Hit Stop + 震屏）⚠ 统一使用 Elimination，禁用 Kill 关键字
+Event.Combat.Stun               # 击破（打满架势条）
+Event.Combat.ChainReady         # 连携就绪
+
+Effect.Ability.CanCombo          # 连段窗口激活（AnimNotifyState_AbilityWindow 通过 ASC Tag 管理）
+```
+
+> **实现补充注册（2026-08-01 对照）**: 代码实际注册的完整集合除上述外还包括：
+> ```
+> Ability.Attack.Basic.BasicAttack01 ~ 04   # 每段普攻身份（GA 的 AbilityTags 层级子项）
+> State.Combat.Recovery                     # 收刀段标记（Move 输入可打断攻击）
+> Effect.Input.CanBuffer                    # 输入缓冲窗口（AnimNotifyState_InputWindow 管理）
+> Data.Damage / Data.Daze                   # SetByCaller 键（ExecCalc 读取）
+> GameplayCue.ZZZ.DamageNumber              # 飘字 GameplayCue
+> ```
+
+---
+
+## 七、实施路线图
+
+> **进度标记（2026-08-01）**: ✅ 已完成 ｜ 🔄 部分完成 ｜ ⬜ 未开始
+
+### Phase 1: 基础设施（预计 2-3 天）✅ 已完成
+
+**目标**: GAS 环境就绪，角色可以拥有 HP/Energy/Daze 属性
+
+- [ ] `Build.cs` 添加 `GameplayAbilities` / `GameplayTags` / `GameplayTasks`
+- [ ] 创建 `UZZZAttributeSet`（HP / Energy / Daze / ATK / DEF / Anomaly）
+- [ ] 创建 `UZZZAbilitySystemComponent`（如有自定义需要；否则用引擎自带）
+- [ ] 创建 `UZZZGameplayAbility` 基类
+- [ ] 创建 `UZZZDamageExecution`（统一 ExecCalc：HP 伤害 + Daze 积蓄 + Anomaly 积蓄）
+- [ ] 集中定义 `ZZZGameplayTags`（C++ 注册所有核心 Tag）
+- [ ] 创建 `AZZZCharacter`（集成 ASC + AttributeSet 的 ACharacter 子类）
+- [ ] 创建 `BP_ZZZCharacter`（Blueprint 子类，绑定珂蕾妲网格+动画）
+- [ ] 创建测试关卡 `Lvl_ZZZ_Arena`
+
+**产出**: 带 GAS ASC 的角色可以在关卡中生成，属性被正确初始化
+
+### Phase 1.5: 输入 → GameplayTag 桥接（预计 1 天）⭐ 审查新增 ✅ 已完成
+
+**目标**: Enhanced Input Action 自动映射到 GameplayTag，消除手写 InputBinding
+
+- [ ] 创建 `UZZZInputConfig` DataAsset（仿 Lyra 模式）
+  - `TMap<UInputAction*, FGameplayTag>` 映射表
+- [ ] 在 `AZZZCharacter` 的 `SetupPlayerInputComponent` 中绑定：
+  - InputAction Triggered → ASC 广播对应 `FGameplayTag` Event
+- [ ] Ability 的 `AbilityTriggers` 直接设置为对应的 Input Tag → Ability 自动触发
+
+**产出**: 按键 → GameplayTag → Ability 的完整数据驱动链路，无需在 Character 中写 `IA_Attack->BindAction(...)` 样板代码。
+
+```cpp
+// ZZZInputConfig.h — Lyra 风格 IA→Tag 桥接 DataAsset
+#pragma once
+#include "CoreMinimal.h"
+#include "Engine/DataAsset.h"
+#include "GameplayTagContainer.h"
+#include "ZZZInputConfig.generated.h"
+
+class UInputAction;
+
+/** 单个输入绑定：InputAction → GameplayTag */
+USTRUCT(BlueprintType)
+struct FZZZInputAction
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditDefaultsOnly)
+    TObjectPtr<const UInputAction> InputAction = nullptr;
+
+    UPROPERTY(EditDefaultsOnly)
+    FGameplayTag InputTag;  // e.g. Input.Attack, Input.Dodge
+};
+
+UCLASS()
+class ZZZCOMBATCORE_API UZZZInputConfig : public UDataAsset
+{
+    GENERATED_BODY()
+
+public:
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Input")
+    TArray<FZZZInputAction> AbilityInputActions;
+    // 示例条目:
+    //   IA_Attack  → Input.Attack
+    //   IA_Dodge   → Input.Dodge
+    //   IA_Special → Input.Special
+    //   IA_Switch_Next → Input.Switch.Next
+    //   IA_Ultimate → Input.Ultimate
+};
+```
+
+### Phase 2: 基础攻击（预计 3-4 天）🔄 基本完成
+
+> 实现偏差：`AbilityTask_DoTrace` 尚未创建，碰撞检测仍用 `ZZZAnimNotify_AttackTrace`（AnimNotify 过渡符合 8.2 策略），迁移推迟至 Phase 3+。
+
+**目标**: 普攻连段跑通，伤害计算正确
+
+- [ ] 创建 `UAnimNotifyState_AbilityWindow`（定义"可触发下一段攻击"的动画时间窗口）⭐
+- [ ] 创建 `UAbilityTask_WaitInputBuffer`（监听输入缓冲，将 `Input.Buffered.Attack` 写入 ASC Tags）
+- [ ] 创建 `UZZZBasicAttack`（管理连段计数、预输入缓冲、Combo Window）
+- [ ] 创建 `AbilityTask_DoTrace`（替代 `AnimNotify_DoAttackTrace`，Ability 驱动的碰撞检测）
+- [ ] 创建 `AbilityTask_WaitCombo`（替代 `AnimNotify_CheckCombo`）
+- [ ] 创建 `GA_BasicAttack_01` ~ `GA_BasicAttack_05`（每段一个 Ability）
+- [ ] 创建 `GE_Damage`（通用伤害 GameplayEffect）
+- [ ] 创建 `IMC_ZZZ` + `IA_Attack`（增强输入绑定，通过 Phase 1.5 的 InputConfig 自动映射）
+- [ ] 给 `AZZZCharacter` 添加 `GrantAbility` 逻辑
+- [ ] 配置普攻 Montage，嵌入 AnimNotify 回调 Ability Task
+
+**产出**: 按普攻键 → 播放攻击动画 → 命中检测 → 扣血。输入缓冲确保即使提前按下按键也能正确连段。
+
+### Phase 3: 闪避 & 弹刀（预计 3-4 天）🔄 前置原型已完成
+
+> ✅ **角色切换最小原型已验证（2026-08-01，PIE 通过）**：
+> - **架构**：Pawn-ASC（8.1 决策变更）+ 持久化成员——切换 = 隐藏旧 + 显示新 + Possess，成员不销毁
+> - **验证点**：独立属性（A 掉血不影响 B）、切换单次触发（`Started` 事件，`Triggered` 会按住连切）、无 tag 残留、无重复 Ability spec、连按 10 次无崩溃
+> - **实现**：切换触发为 PC 直接绑定（`SwitchAction` → `ETriggerEvent::Started`），`Input.Switch.Next` tag 已注册备用（未来监听者按需广播）；`RotateToTarget` 跳过隐藏 actor
+> - **已配置资产**：`IA_ZZZSwitch`（Space Bar）、`BP_Okuma_Switch`（BP_Okuma 副本）、`BP_ZZZPlayerController`（SwitchAction + SquadClasses=[BP_Okuma, BP_Okuma_Switch]）
+> - **遗留**：入场/出场动画（`SwitchOut_Normal_Anim1`）接驳、脱手技/连携并行执行 → 本 Phase 内做
+
+**目标**: 防守/切换闭环形成
+
+- [ ] 创建 `UZZZDodge`（闪避帧窗口、完美闪避判定）
+- [ ] 完美闪避时触发 `State.SlowMotion` — **使用 CustomTimeDilation 而非 SetGlobalTimeDilation** ⭐
+- [ ] 创建 `UZZZAssistDefensive`（弹刀 Ability）
+- [ ] 创建 `UZZZAssistOffensive`（突击支援 Ability）
+- [ ] 三人编队切换（`IA_Switch_Next` / `IA_Switch_Prev`）
+- [ ] 切换时 ASC 归属处理（PlayerState 方案）
+- [ ] 创建 `WBP_TeamPanel`（显示队友头像、HP、能量）
+
+**产出**: 按闪避键 → 闪避动画 → 完美时机触发 SlowMo；按切换键 → 队友入场攻击
+
+### Phase 3.5: 时间管理与受击反馈（预计 1-2 天）⭐ 审查新增 ⬜
+
+**目标**: 精细化时间膨胀和打击感
+
+- [ ] 创建 `GE_SlowMotion`（Infinite GE，修改 `CustomTimeDilation`）
+  - 通过 `FGameplayTag` 查询筛选：只作用于 `State.Enemy` 标记的目标
+  - 玩家角色和 UI 不受影响
+- [ ] 完美闪避成功时给 Source ASC 施加 `GE_SlowMotion`
+- [ ] Hit Stop（命中顿帧）：在 `UZZZDamageExecution` 命中逻辑中临时 `SetCustomTimeDilation(0.0, 0.05s)` 实现短暂停帧
+- [ ] 屏幕震动：`BP_CameraShake_Hit` 在 `GE_Damage` 的 `GameplayCue` 中触发
+
+**产出**: 完美闪避 → 只减速敌人（UI/玩家正常）→ 打击感显著提升
+
+### Phase 4: 元素 & 异常（预计 2-3 天）⬜
+
+**目标**: 五种元素属性 + 异常积蓄 & 爆发
+
+- [ ] 扩展 `UZZZAttributeSet` 的元素相关属性
+- [ ] 创建元素类型枚举 / GameplayTag 映射
+- [ ] 创建 `GE_AnomalyBuildup_Fire` 等五种元素积蓄 GE
+- [ ] 创建异常爆发 GE（灼烧 dot / 冻结硬直 / 感电 aoe / 强击大伤害 / 侵蚀 debuff）
+- [ ] 创建 `DT_ElementReaction` DataTable（元素反应规则）
+- [ ] UI 显示异常积蓄条
+
+**产出**: 火属性攻击 → 敌人异常条上升 → 满后触发灼烧效果
+
+### Phase 5: 终结技 & 连携技（预计 3-4 天）⬜
+
+**目标**: 完整战斗闭环（普攻→击破→连携→终结）
+
+- [ ] 创建 `AZZZCombatDirector`（GameState 子组件，连携协调器）⭐
+- [ ] 创建 `UZZZUltimate`（消耗 Decibel 值，全队共享）
+- [ ] 创建 `UZZZChainAttack`（Trigger 条件：目标进入 `State.Stun`，由 Director 调度）
+- [ ] 创建 `AbilityTask_ChainCamera`（连携时镜头平滑 Lerp + 短暂暂停）
+- [ ] **相机混合系统** ⭐：研究 `UCameraModifier` / Cinemachine 风格的相机混合，实现 ZZZ 连携时的丝滑镜头插值
+- [ ] 连携技选择 UI（角色头像弹出，玩家点选或超时自动选择）
+- [ ] 连携链管理（最多 3 次连携，已行动角色不可重复选择）
+- [ ] 终结技动画 + 镜头演出
+- [ ] **消灭反馈（Elimination）** ⭐：检测 HP ≤ 0 → 广播 `Event.Combat.Elimination` → 触发 Hit Stop + 震屏（函数命名统一为 `HandleElimination` / `OnEliminated`，禁用 Kill 关键字）
+
+**产出**: 打满架势条 → 触发连携 → 选队友 → 连携技演出 → 终结技收尾；击杀时顿帧震屏
+
+### Phase 6: AI & 关卡（预计 3-5 天）⬜
+
+**目标**: 可玩的战斗 Demo
+
+- [ ] `AZZZCombatEnemy` 升级 — 集成 ASC + 受击硬直 + 异常状态
+- [ ] 升级 StateTree AI（巡逻/追击/攻击/闪避/受击硬直/失衡/死亡）
+- [ ] StateTree 条件可读 GameplayTag（`State.Staggered` / `State.Stun`）
+- [ ] `AZZZEnemySpawner` 波次管理
+- [ ] 战斗测试关卡（多种敌人组合）
+- [ ] 伤害飘字 `WBP_DamageNumber`
+- [ ] HUD 合成（HP/能量/队友/小地图/锁定指示）
+
+**产出**: 可玩战斗 Demo — 三人编队 vs 以骸敌人波次
+
+---
+
+## 八、关键技术决策
+
+> 本章节整合了 Epic Developer Assistant 审查意见中的关键技术要点。
+
+### 8.1 ASC 归属：Pawn（2026-08-01 决策变更）⭐
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **Pawn-ASC**（当前决策） | 独立血条/资源/冷却天然隔离（Cooldown 是 tag、属性是 AttributeSet 实例，各 Pawn 各自持有）；脱手技/后台 DoT 并行执行（旧角色 Unpossess 后由自己 ASC 驱动）；玩家与敌人模式统一；单机无复制需求 | 多人迁移成本（→ PS-ASC 是已知迁移路径）；全队共享资源（Decibel 大招条）需独立载体（GameState/Director，Phase 5） |
+| PlayerState（原方案） | 切换角色时 ASC 不销毁，属性和 Buff 跟随玩家 | 独立属性/冷却需 tag 命名空间 + 多 AttributeSet 映射，逻辑复杂 |
+
+> **决策变更原因（2026-08-01）**: 需求明确为"每个角色独立血条/资源条/技能冷却"后，PS-ASC 的核心优势（共享属性持久化）不再适用。单机项目下 Pawn-ASC 以最低复杂度满足全部需求。原决策基于"编队共享能量"假设，随需求变更废弃。**注意**：Pawn-ASC 依赖 Actor Tick 推进 Duration GE（冷却/后台 DoT）——角色 `PrimaryActorTick.bCanEverTick` 必须为 true（已启用），隐藏成员不可停 Actor Tick。
+
+### 8.2 AnimNotifyState 与 AbilityTask 的配合 ⭐
+
+| 方案 | 适用场景 | 说明 |
+|------|---------|------|
+| **UAnimNotifyState_AbilityWindow**（推荐） | 连段窗口标记 | 在动画序列中定义"可触发下一段攻击"的起止时间段，与 `UAbilityTask_WaitCombo` 配合 |
+| **UAbilityTask_WaitInputBuffer**（推荐） | 输入缓冲 | 在 Ability 激活后开启监听窗口，捕获提前输入并写入 `Input.Buffered.*` Tag |
+| **AnimNotify**（过渡） | 碰撞检测 | 初期沿用，后续由 `AbilityTask_DoTrace` 完全替代 |
+
+> **策略**: 输入层用 AbilityTask，动画窗口层用 AnimNotifyState，碰撞检测层逐步从 AnimNotify 迁移到 AbilityTask。
+
+**AbilityWindow 的 GameplayTag 设计（⭐ 第二轮审查优化）**：
+
+`UAnimNotifyState_AbilityWindow` 不应只是一对 Begin/End 回调，而是在内部维护一个 GameplayTag：
+
+```
+AnimNotifyState_AbilityWindow::NotifyBegin()
+  → ASC->AddLooseGameplayTag(Effect.Ability.CanCombo)
+
+AnimNotifyState_AbilityWindow::NotifyEnd()
+  → ASC->RemoveLooseGameplayTag(Effect.Ability.CanCombo)
+```
+
+**优势**：
+- **解耦彻底**：`WaitCombo` 不需要知道 NotifyState 的存在，只需 `ASC->HasMatchingGameplayTag(ComboWindowTag)` 
+- **可组合**：未来如果有 Buff/Debuff 也影响连段窗口（如"攻速提升扩大窗口"），只需操作同一个 Tag
+- **可调试**：`showdebug abilitysystem` 可以实时看到 Tag 的增删
+
+### 8.3 输入缓冲机制 ⭐
+
+ZZZ 手感的精髓在于"手感预修正"和"输入队列"。传统方案（在 `AnimNotify_CheckCombo` 中检查 `CachedAttackInputTime`）受帧率波动影响，不够精确。
+
+**改进方案 — `UAbilityTask_WaitInputBuffer`**：
+
+```
+玩家按下 IA_Attack
+  → Enhanced Input → InputConfig → Input.Attack Tag → ASC 收到 GameplayEvent
+    → GA_BasicAttack_01 激活
+      → UAbilityTask_WaitInputBuffer 开始监听 Input.Attack
+        → 玩家在当前 Montage 结束前再次按下
+          → Task 将 Input.Buffered.Attack 写入 ASC Tags
+            → UAbilityTask_WaitCombo 检查缓冲 Tag
+              → 若在 AnimNotifyState_AbilityWindow 窗口内
+                → ComboIndex++ → 跳转 GA_BasicAttack_02
+```
+
+> **收益**: 消除帧率波动对连段触发的影响，实现 ZZZ 那种极度流畅的"预按压"响应。
+
+> **实现对照（2026-08-01）**: 落地实现调整为 ——
+> 1. **缓冲写入 PlayerController**（`BufferedInput` 单 Tag），而非向 ASC 写入 `Input.Buffered.Attack` LooseTag（避免 tag 残留）；
+> 2. `UAbilityTask_WaitCombo` 改为**事件驱动**（`RegisterGameplayTagEvent` 监听 CanCombo 增删 + `GenericGameplayEventCallbacks` 监听攻击输入），替代文档初版的 TickTask 轮询；
+> 3. **窗口关闭时清空 PC 缓冲**（含攻击被打断场景），防止陈旧缓冲触发下一次攻击的瞬发连段；
+> 4. 新增 `UAnimNotifyState_InputWindow`（`Effect.Input.CanBuffer`）作为独立"输入缓冲窗口"，与 AbilityWindow（连段窗口）分离：缓冲窗口捕获"提前按"，连段窗口消费。两级窗口时序由 Montage 资产摆放决定；
+> 5. 移动打断：`Move()` 输入在 `State.Combat.Recovery` tag 存在时 `CancelAbilities`（按 `Ability.Attack.Basic` 父 Tag 层级匹配 GA 子类）。
+
+**连段过渡的顺序（⭐ 第二轮审查关键优化）**：
+
+在 `CheckComboTransition()` 中，**必须先激活下一段 Ability，再结束当前 Ability**：
+
+```cpp
+void UZZZBasicAttack::CheckComboTransition()
+{
+    if (!ASC->HasMatchingGameplayTag(ComboWindowTag)) return;
+    if (!ASC->HasMatchingGameplayTag(BufferedInputTag)) return;
+    
+    // 1. 消费缓冲输入
+    ASC->RemoveLooseGameplayTag(BufferedInputTag);
+    
+    // 2. 先激活下一段 — 新 Montage 的 BlendIn 覆盖当前收刀段
+    ASC->TryActivateAbilityByClass(NextComboAbility);
+    
+    // 3. 再结束当前 Ability — 此时下一段的 Montage 已在 BlendIn 中
+    EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+```
+
+> ⚠ **风险**: 如果先 `EndAbility` 再激活下一段，Montage BlendOut 和 BlendIn 之间可能有 1-2 帧空窗，导致角色短暂回到 Idle 姿态。先激活下一段的 Montage BlendIn 可以桥接这个空窗。
+
+### 8.4 伤害统一计算：ExecCalc ⭐
+
+不再分离 HP 伤害、Daze 积蓄、Anomaly 积蓄的计算。在 `UZZZDamageExecution` 中统一处理：
+
+```cpp
+// UZZZDamageExecution::Execute_Implementation 伪代码（完整实现见附录 C.3）
+void Execute(...) const  // L1 修复：const
+{
+    // 1. 计算基础 HP 伤害（Attack × DefenseFactor）
+    float BaseDamage = CaptureAttribute(Source.Attack) * DefenseFactor;
+
+    // 2. 计算 Daze 积蓄（BaseDamage × DazeMultiplier）
+    OutExecutionOutput.AddOutputModifier(
+        FGameplayModifierEvaluatedData(
+            GetDazeAttribute(), Additive, DazeAmount, FActiveGameplayEffectHandle()));
+
+    // 3. 计算异常积蓄（BaseDamage × AnomalyMastery × ElementMultiplier）
+    OutExecutionOutput.AddOutputModifier(
+        FGameplayModifierEvaluatedData(
+            GetAnomalyAttribute(), Additive, AnomalyAmount, FActiveGameplayEffectHandle()));
+
+    // 4. 应用最终 HP 伤害
+    OutExecutionOutput.AddOutputModifier(
+        FGameplayModifierEvaluatedData(
+            GetHealthAttribute(), Additive, -BaseDamage, FActiveGameplayEffectHandle()));
+}
+```
+
+> **收益**: 一次 ExecCalc 调用完成全部三种数值计算，避免多次 GE 应用的开销和时序问题。
+
+### 8.5 连携技调度 — Director 模式 ⭐
+
+引入 `AZZZCombatDirector`（作为 GameState 子组件）协调连携流程：
+
+```
+目标进入 State.Stun (Daze 打满)
+  → Director::OnEnemyStunned(Enemy)
+    → 暂停全体 AI 逻辑（对所有 State.Enemy 施加 State.SlowMotion）
+    → 对非活跃队友施加 State.IgnoreInput + State.Invulnerable（防止 AI 干扰连携演出）
+    → 弹出连携选择 UI（WBP_ChainSelect）
+      → 玩家选择队友（或超时自动选择）
+        → Director 通过 ASC->TryActivateAbilitiesByTag(Ability.ChainAttack) 强制激活
+          → 被选角色播放 GA_ChainAttack:
+            → AbilityTask_ChainCamera: 镜头平滑 Lerp 到新角色（UCameraModifier 驱动）
+            → 伤害结算
+            → Director::OnChainComplete() → 下一轮选择（最多 3 次）
+    → Director 恢复 AI 逻辑、移除 SlowMotion、移除 IgnoreInput
+```
+
+> **Director 必须是 Authority 权威端的仲裁者**，所有状态决策在 Server 端执行，通过 GameplayTag 复制到 Client。
+
+### 8.6 子弹时间：CustomTimeDilation ⭐（H1 修复）
+
+**❌ 不推荐**: `SetGlobalTimeDilation(0.1)` — 影响 UI 动画、VFX、音效和全局系统。
+
+**❌ 适配说明**: `CustomTimeDilation` 是 `AActor` 原生属性，不是 `FGameplayAttributeData`，**GE 无法直接修改**。需要 AttributeSet 桥接。
+
+**✅ 修复方案**:
+
+1. 在 `UZZZAttributeSet` 中添加桥接属性：
+```cpp
+// AttributeSet 中添加
+UPROPERTY(BlueprintReadOnly, Category = "Attributes|Time")
+FGameplayAttributeData TimeDilation;
+ATTRIBUTE_ACCESSORS(UZZZAttributeSet, TimeDilation)
+```
+
+2. `PostGameplayEffectExecute` 中桥接到 Actor（**仅 Instant GE 生效场景**；Infinite GE 需走 Delegate 方案）：
+```cpp
+if (Data.EvaluatedData.Attribute == GetTimeDilationAttribute())
+{
+    if (AActor* Owner = GetOwningActor())
+    {
+        Owner->CustomTimeDilation = GetTimeDilation();
+    }
+}
+```
+
+3. `GE_SlowMotion` 配置：
+   - Modifier: `TimeDilation = 0.1`
+   - Application Tag Requirements: `Target.HasTag(State.Enemy)`
+   - Duration: 2.0s
+
+4. 玩家角色（带 `State.Player` Tag）豁免此效果。UI 系统（独立于 World TimeDilation）完全不受影响。
+
+### 8.7 消灭反馈（Elimination）⭐ 命名规范更新
+
+⚠ **命名规范**: 统一使用 `HandleElimination` / `OnEliminated`，禁用 `Kill` 关键字。
+
+在 `PostGameplayEffectExecute` 中检测死亡并触发反馈：
+
+```cpp
+void UZZZAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data)
+{
+    Super::PostGameplayEffectExecute(Data);  // C4 修复：必须调用基类实现
+
+    const FGameplayEffectContextHandle& Context = Data.EffectSpec.GetContext();
+    UAbilitySystemComponent* SourceASC = Context.GetOriginalInstigatorAbilitySystemComponent();
+    AActor* TargetActor = Data.Target.GetOwner();
+
+    // === 生命归零检测 ===
+    if (Data.EvaluatedData.Attribute == GetHealthAttribute())
+    {
+        SetHealth(FMath::Clamp(GetHealth(), 0.0f, GetMaxHealth()));
+
+        if (GetHealth() <= 0.0f)
+        {
+            // 广播消灭事件 → Hit Stop + 震屏 + VFX
+            FGameplayEventData EventData;
+            EventData.Instigator = Context.GetInstigator();
+            EventData.Target = TargetActor;
+            SourceASC->HandleGameplayEvent(
+                ZZZGameplayTags::Event_Combat_Elimination, &EventData);
+
+            // Hit Stop: 对目标施加极短 CustomTimeDilation
+            // 震屏 + VFX 通过 GameplayCue 处理（不在 PostGameplayEffectExecute 中直接 SpawnEmitter）
+        }
+    }
+
+    // === Daze 打满检测 ===
+    if (Data.EvaluatedData.Attribute == GetDazeAttribute())
+    {
+        SetDaze(FMath::Clamp(GetDaze(), 0.0f, GetMaxDaze()));
+
+        if (GetDaze() >= GetMaxDaze())
+        {
+            FGameplayEventData StunData;
+            StunData.Instigator = Context.GetInstigator();
+            StunData.Target = TargetActor;
+            SourceASC->HandleGameplayEvent(
+                ZZZGameplayTags::Event_Combat_Stun, &StunData);
+            SetDaze(0.0f);
+        }
+    }
+
+    // === IncomingDamage 消费（Meta Attribute 模式） ===
+    if (Data.EvaluatedData.Attribute == GetIncomingDamageAttribute())
+    {
+        // IncomingDamage 已被 ExecCalc 设置，此处应用并归零
+        SetIncomingDamage(0.0f);
+    }
+}
+```
+
+> ⚠ **重要（M1）**: `PostGameplayEffectExecute` **仅在属性 BaseValue 被修改时触发**（即 Instant GE）。Duration/Infinite GE 的 CurrentValue 修改不会触发此回调——应改用 `UAbilitySystemComponent::GetGameplayAttributeValueChangeDelegate()` 监听。
+>
+> ⚠ **重要**: 绝不在 `PostGameplayEffectExecute` 中直接 `SpawnEmitter` 生成特效。应通过 `ExecuteGameplayCueOnActor` 走 GAS 内置 RPC 优化链路。特效、音效、震屏全部由 `GameplayCue` 系统管理。
+>
+> **GameplayTag 静态初始化（M4 修复）**— 在 .cpp 顶部，避免热路径中的字符串查找：
+>
+> ```cpp
+> // ZZZAttributeSet.cpp 文件顶部
+> namespace ZZZGameplayTags
+> {
+>     UE_DEFINE_GAMEPLAY_TAG_STATIC(Event_Combat_Elimination, "Event.Combat.Elimination");
+>     UE_DEFINE_GAMEPLAY_TAG_STATIC(Event_Combat_Stun,       "Event.Combat.Stun");
+> }
+> ```
+
+### 8.8 原版 AnimNotify vs AbilityTask（保留原分析）
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **AnimNotify**（现有） | 简单，动画师可直接放置 | 与 Ability 生命周期解耦，难以控制 Activation/Deactivation |
+| **AbilityTask**（迁移方向） | 完全在 Ability 生命周期内，可被 Cancel 自动清理 | 需要 C++ 开发和 Ability 绑定 |
+
+> **选择**: AbilityTask 为主 + AnimNotify 为过渡。Phase 2 用 AnimNotify 过渡，Phase 3+ 全面迁移。
+
+### 8.9 元素异常积蓄模型
+
+```
+攻击命中
+  → UZZZDamageExecution 统一计算 AnomalyBuildup 量
+    → 对目标施加对应 GE_AnomalyBuildup_*
+      → GE 为 Infinite 类型，叠加 Stacks
+        → Stack 达到阈值 (由 AnomalyProficiency + ElementMultiplier 计算)
+          → 触发 Anomaly 爆发 (GE_Anomaly_*)
+            → FIFO 队列，同时只能存在一种异常
+            → 清除当前异常积蓄值
+```
+
+### 8.10 收刀动画与连段窗口机制 ⭐ 第二轮审查新增
+
+ZZZ 攻击动画资源中，每段攻击包含**收刀（Recovery/Sheathing）动作**。正确处理收刀是连段手感的决定性因素。
+
+**核心原则**: 收刀 = 合法的输入窗口。视觉上的"后摇"转化为逻辑上的"下一段触发区间"。
+
+#### Montage 结构
+
+每段攻击使用**一个 Montage**，内部包含两个逻辑段：
+
+```
+┌─────────────────── GA_BasicAttack_01 ──────────────────┐
+│  Montage: AM_BasicAttack_01                             │
+│  ┌──────────────┐  ┌──────────────────────────────┐     │
+│  │ Section:Attack│  │     Section:Recovery (收刀)    │     │
+│  │  挥刀 + 命中  │  │  收刀 → 回待机                   │     │
+│  │              │  │  ◄── AnimNotifyState_AbilityWindow │   │
+│  │              │  │       (Effect.Ability.CanCombo)     │     │
+│  └──────────────┘  └──────────────────────────────┘     │
+│                         ↑                                │
+│              玩家在此窗口内按攻击键 → GA_BasicAttack_02    │
+│              玩家不按键 → 收刀播完 → 回 Idle               │
+└───────────────────────────────────────────────────────┘
+```
+
+#### 关键设计决策
+
+| 决策 | 理由 |
+|------|------|
+| **不要把收刀拆成独立 Montage** | 增加状态管理复杂度，blend 不连贯 |
+| **收刀 = Combo Window 的载体** | 玩家在收刀时按键 → 直接过渡到下一段攻击，不等收刀播完 |
+| **不按键 → 收刀自然播完** | 表现完整，无突兀切断 |
+| **收刀段保持 Root Motion** | 收刀常带重心回位位移，关掉会导致 capsule 与骨骼脱节 |
+| **GameplayTag 管理窗口状态** | `Effect.Ability.CanCombo` — Begin 添加，End 移除，WaitCombo 只查 Tag |
+
+#### 连段过渡流程
+
+```
+GA_BasicAttack_N 激活
+  → PlayMontageAndWait(AM_BasicAttack_N)
+    → AnimNotifyState_AbilityWindow::NotifyBegin()
+      → ASC 获得 Effect.Ability.CanCombo Tag
+        → UAbilityTask_WaitCombo 每帧 Tick 检查:
+          ✓ CanCombo Tag 存在？
+          ✓ Input.Buffered.Attack Tag 存在？
+            → 消费缓冲 Tag → 激活 GA_BasicAttack_N+1
+              → 新 Montage BlendIn 覆盖当前收刀
+              → EndAbility(当前)
+            → 不满足 → 继续 Tick
+    → AnimNotifyState_AbilityWindow::NotifyEnd()
+      → ASC 移除 Effect.Ability.CanCombo Tag
+  → Montage 播完 → Ability 自然结束 → 回 Idle
+```
+
+#### WaitCombo 实现（Tick 检查）
+
+> **实现对照（2026-08-01）**: 落地版为**事件驱动**（见 8.3 实现对照 2-3 条），下述 TickTask 示例已被替代，保留作设计思路参考。
+
+```cpp
+void UAbilityTask_WaitCombo::TickTask(float DeltaTime)
+{
+    if (!ASC.IsValid()) return;
+    
+    bool bInWindow = ASC->HasMatchingGameplayTag(ComboWindowTag);
+    bool bHasBuffered = ASC->HasMatchingGameplayTag(BufferedInputTag);
+    
+    if (bInWindow && bHasBuffered)
+    {
+        ASC->RemoveLooseGameplayTag(BufferedInputTag); // 消费，防止重复触发
+        OnComboTriggered.Broadcast();
+    }
+}
+```
+
+> ⚠ **WaitCombo 不操作 Montage Section 跳转**。与模板代码的 `Montage_JumpToSection` 不同——GAS 方案是**一段 Ability = 一个 Montage**，连段 = Ability 切换，不是 Section 跳转。
+
+### 8.11 敌人攻击预警（攻击前摇黄闪）⭐ 2026-08-08
+
+**目标**: 敌人出手前摇时闪黄色光提醒玩家闪避（ZZZ 原版：可闪避攻击=黄闪；未来不可闪避攻击=红闪、可弹刀=蓝闪，同一机制换色）。
+
+**方案**: Montage → 引擎内置 GameplayCue AnimNotify → GCN_Static，是项目 10.3/L3"视觉反馈必须走 GameplayCue"规则的又一落地。
+
+#### 触发链路
+
+```
+AM_EnemyAttack 抬手帧
+  → 引擎内置 AnimNotify "GameplayCue (Burst)"（UAnimNotify_GameplayCue，零 C++）
+    → ExecuteGameplayCue(GameplayCue.ZZZ.EnemyAttackWarning, Owner)
+      → UGC_ZZZ_EnemyAttackWarning::OnExecute（GCN_Static）
+        → 消除检查（State.Dead → 跳过）
+        → SpawnSystemAttached 挂 Parameters.TargetAttachComponent（引擎 notify 自动填 mesh，闪光跟随身体）
+```
+
+#### 关键技术事实（UE 5.8）
+
+| 事实 | 说明 |
+|---|---|
+| GAS 迁插件 | 5.8 中 GameplayAbilities 位于 `Engine/Plugins/Runtime/GameplayAbilities`（非 Engine/Source/Runtime），项目已依赖，无影响 |
+| 自带通知 | 引擎自带 `UAnimNotify_GameplayCue`（DisplayName "GameplayCue (Burst)"，属性 `FGameplayCueTag` 带 `Categories="GameplayCue"` 过滤）与 `UAnimNotify_GameplayCueState`（"GameplayCue (Looping)"，Begin/Tick/End 驱动 Looping 类 cue）——**无需新增 C++ AnimNotify** |
+| 自动解析 | 内置通知自动解析 Owner 的 ASC（本项目 Pawn-ASC 直接命中），`Parameters.Instigator` 取 ASC Owner，`Parameters.TargetAttachComponent` 设为骨骼网格 |
+
+#### Static vs Actor 取舍（核心决策）
+
+| 路径 | 表现 | Cue 类型 | 理由 |
+|---|---|---|---|
+| **A（MVP，已落地）** | 一次性黄色爆闪（Niagara 自灭） | `UGameplayCueNotify_Static` | 无状态、无恢复步骤、自灭；多敌人同时闪光互不干扰；美术可调 |
+| B（进阶，还原 ZZZ 原版） | 全身泛黄光（材质 Overlay） | `GameplayCueNotify_Actor` + "GameplayCue (Looping)" | 需要恢复 Overlay（有状态）；Static 是单例会串状态；Looping notify state 在蒙太奇被打断（闪避/受击/死亡）时自动 NotifyEnd 兜底恢复 |
+
+**决策**: 先做路径 A 验证"提醒"功能；效果不满足再升级路径 B（换通知类型 + 换 GCN 基类即可，逻辑不变）。
+
+#### Tag 与 C++ 落地
+
+- **Tag**: `GameplayCue.ZZZ.EnemyAttackWarning`（L3 前缀规范，非 `GameplayCue.Enemy.*`）——双通道注册：`Config/DefaultGameplayTags.ini`（R18：cue tag 必须 ini 注册，BP 子类 CDO 才继承到有效 tag；早于任何 CDO 构造）+ `FZZZGameplayTags`（R11 单一来源，ini 优先 + `AddNativeGameplayTag` 兜底）
+- **GCN**: `Source/ZZZCombatRemake/ZZZ/Cues/GC_ZZZ_EnemyAttackWarning.h/.cpp`（`UGC_ZZZ_EnemyAttackWarning : UGameplayCueNotify_Static`，仿 `GC_ZZZ_DamageNumber`）
+  - 构造函数：`GameplayCueTag` 从 ini tag 读取 + `IsOverride = true`（R18：native cue 必须标 override，否则 CueManager 可能忽略）
+  - `OnExecute`：`MyTarget`/`WarningSystem` 校验 → 消除检查（`ASC->HasMatchingGameplayTag(State.Dead)`，敌人抬手瞬间被击杀则不闪）→ `SpawnSystemAttached` 挂 `Parameters.TargetAttachComponent`（兜底 `SpawnSystemAtLocation`）
+  - `UPROPERTY WarningSystem`（Niagara 资产）在 BP 子类配置
+  - `UPROPERTY AttachSocketName`（默认 `hand_r`，socket/bone 名均可）：特效附加到**攻击手**而非 mesh 根——裸 attach 到 mesh 会把闪光放在网格原点（敌人脚下），2026-08-08 修复；socket/bone 不存在时日志告警并兜底 mesh 根，BP 子类可按敌人类型改（左撇子敌人改 `hand_l`）
+- **依赖**: `ZZZCombatRemake.Build.cs` PrivateDependencyModuleNames 新增 `Niagara`（UNiagaraFunctionLibrary）
+- **5.8 API 事实（编译踩坑）**: `UNiagaraFunctionLibrary::SpawnSystemAttached` 参数顺序为 `(System, AttachTo, Point, Loc, Rot, LocationType, bAutoDestroy, bAutoActivate, PoolingMethod, bPreCullCheck)`——**bAutoActivate 在 PoolingMethod 之前**（旧版顺序为 bAutoDestroy→PoolingMethod→bAutoActivate），按旧顺序传枚举会 C2665 无匹配重载
+
+#### 扩展点（Phase 6+）
+
+不可闪避红闪 / 弹刀蓝闪：同一 GCN 加颜色参数（`FGameplayCueParameters.Magnitude` 或新 tag 参数），或按敌人子类配置不同 cue tag——与飘字 `GetElementColor(tag)` 的 Phase 4 扩展点思路一致。
+
+#### 编辑器操作指南（C++ 已就绪，以下为人工操作）
+
+1. **确认 tag 可见**：编辑器项目设置 → Gameplay Tags 搜索 `GameplayCue.ZZZ.EnemyAttackWarning`（C++/ini 已注册，无需手动添加）。
+2. **蒙太奇放通知**：打开 `Content/ZZZ/Animations/AM_EnemyAttack`，在**抬手起势帧**（攻击判定 notify 之前约 0.2-0.4s，给玩家反应时间）右键通知轨道 → Add Notify → 选 **GameplayCue (Burst)**，属性 GameplayCue 下拉选 `GameplayCue.ZZZ.EnemyAttackWarning`。
+3. **准备 Niagara 特效**：创建黄色闪光 Niagara 系统（Sprite 径向爆闪即可，生命周期 ~0.3s，**自灭**——不要无限循环），作为路径 A 占位；位置跟随可选挂骨骼。
+4. **创建 GCN BP 子类**：`Content/ZZZ/Cues/` 右键 → Blueprint Class → 父类选 `GC_ZZZ_EnemyAttackWarning`（C++ 类，搜索 "GC_ZZZ_EnemyAttackWarning"），命名 `GC_ZZZ_EnemyAttackWarning`；Class Defaults 确认 Gameplay Cue Tag 继承值为 `GameplayCue.ZZZ.EnemyAttackWarning`（勿清空），`WarningSystem` 填 Niagara 资产，`AttachSocketName` 按敌人攻击手调整（默认 `hand_r`；若闪光落在脚下说明骨架无该 socket，日志会告警）。保存后 `DefaultGame.ini` 的 `+GameplayCueNotifyPaths=/Game/ZZZ/Cues` 已覆盖扫描（R18：新增 cue 资产若未被识别，重启编辑器/刷新资产）。
+5. **PIE 验证**：`BP_EnemyTest_Manny`（bEnableAttackBehavior=true）进入 AttackRange → 抬手瞬间闪黄光 → 黄闪后约 0.2-0.4s 出攻击判定；验证点：闪避可躲；敌人抬手瞬间被击杀不闪（State.Dead 检查）；两敌人同时攻击各自闪光互不干扰。
+6. （可选）路径 B 升级：通知换成 "GameplayCue (Looping)"，GCN 基类换成 `GameplayCueNotify_Actor`（OnActive 设置 Overlay 材质泛黄光，OnRemove 还原）。
+
+#### ⭐ 2026-08-08 修复记录：GameplayCueName 注册表镜像（R20）
+
+**症状**: 敌人攻击时黄闪不显示。PIE 日志（或 `GameplayCue.PrintGameplayCueNotifyMap`）显示 `GameplayCue.ZZZ.EnemyAttackWarning -> unmapped`——cue tag 触发正常，但 CueManager 映射表没有对应 GCN，`GameplayCueSet::HandleGameplayCue` 对 unmapped 条目**静默 return false**，无任何错误日志。
+
+**根因（三层叠加）**:
+
+1. **扫描不读资产，只读注册表**：`GameplayCueName`（FName，`AssetRegistrySearchable`）是 `GameplayCueTag` 的镜像（引擎头文件注释原话 "Mirrors GameplayCueTag in order to be asset registry searchable"）。CueManager 的 `BuildCuesToAddToGlobalSet` 从 FAssetData 读 `GameplayCueName`，None 直接跳过。C++ 构造函数只设了 `GameplayCueTag`，漏设镜像 → 注册表里 None → 扫描跳过。
+2. **引擎派生逻辑会擦除镜像**：`UGameplayCueNotify_Static::Serialize/PostInitProperties → DeriveGameplayCueTagFromAssetName` 在 CDO 构造和保存时按**资产名**派生 tag（`GC_EnemyAttackWarning` → 未注册的 `GameplayCue.EnemyAttackWarning`）。派生失败时 tag 回退父类值，但 **`GameplayCueName` 已被擦成 None 且不恢复**。
+3. **资产文件序列化值覆盖内存同步**：BP 资产里存的 None 在加载时反序列化覆盖内存值 → 只改 ctor / 只改 BP / 只重启编辑器全部无效。
+
+**修复（`UGC_ZZZ_EnemyAttackWarning`）**: 在引擎派生逻辑**之后**强制 `GameplayCueName = GameplayCueTag.GetTagName()`：
+- 构造函数：同步镜像值（双保险）
+- `PostInitProperties` / `PostLoad`：加载/构造后恢复（**PostLoad 必须有**——反序列化发生在 PostInitProperties 之后，会把它覆盖回 None）
+- `Serialize`：保存路径跳过引擎的派生重载（本类 tag 由 ctor 显式设置，无需派生），持久化正确的注册表镜像
+
+**资产侧**: 重新保存 `.uasset` 让 AssetRegistry 携带正确 tag。⚠ **`asset save` 在包未标记 dirty 时不会落盘**（返回 success 但文件 mtime 不变）——先 set_property 触发 dirty 再 save，用文件 mtime 验证。
+
+**诊断路径**: PIE 日志 `-> unmapped` → `GameplayCue.PrintGameplayCueNotifyMap`（unmapped = 扫描未登记；对比同目录 `GC_DamageNumber -> 0` 有映射）→ 启动日志搜 `GameplayCueManager Found` / `Unable to find GeneratedClass` 定位卡点。
+
+> ⚠ **同类坑预警**: `GC_ZZZ_DamageNumber` 的 ctor 同样未设 `GameplayCueName`（仅历史资产保存值恰好正确）——**重新保存该 BP 会复发**，应同步补上三处重写。
+
+**后续修复（同日）— 黄闪跟随拳头移动**：`SpawnSystemAttached` 只是把 Niagara 组件挂到 `hand_r` socket，粒子默认**世界空间模拟**——发射后坐标固定，拳头前冲时闪光原地不动。解法：Niagara 系统（`NS_YellowCrossFlash`）两个 Emitter 的 **Emitter Properties 勾选 `Local Space`**（本地空间模拟，粒子坐标相对组件变换）。⚠ 勾选后粒子初始位置若残留世界坐标大数值会偏移，需改为本地小值。未来红闪/蓝闪变体沿用同一系统则自动跟随。
+
+---
+
+## 九、数据驱动设计
+
+### 9.1 角色数值 DataAsset
+
+```cpp
+UCLASS()
+class UZZZCharacterData : public UPrimaryDataAsset
+{
+    UPROPERTY(EditAnywhere)
+    float BaseHP;
+    UPROPERTY(EditAnywhere)
+    float BaseAttack;
+    UPROPERTY(EditAnywhere)
+    float BaseDefense;
+    UPROPERTY(EditAnywhere)
+    float BaseEnergy;
+    UPROPERTY(EditAnywhere)
+    float AnomalyMastery;     // 异常掌控（积蓄效率）
+    UPROPERTY(EditAnywhere)
+    float AnomalyProficiency; // 异常精通（爆发伤害）
+    UPROPERTY(EditAnywhere)
+    FGameplayTag ElementType; // Element.Fire / .Ice etc.
+    UPROPERTY(EditAnywhere)
+    TArray<TSubclassOf<UGameplayAbility>> GrantedAbilities;
+};
+```
+
+### 9.2 技能参数 DataTable
+
+| RowName | Damage | EnergyCost | DazeBuildup | AnomalyBuildup | ComboWindow |
+|---------|--------|------------|-------------|----------------|-------------|
+| Attack_L1 | 50 | 0 | 10 | 5 | 0.3s |
+| Attack_L2 | 60 | 0 | 12 | 6 | 0.3s |
+| Attack_L3 | 75 | 0 | 15 | 7 | 0.3s |
+| Special_EX | 200 | 40 | 80 | 30 | - |
+| Ultimate | 800 | 0 | 500 | 0 | - |
+| Dodge | 0 | 0 | 0 | 0 | 0.15s (perfect) |
+
+---
+
+## 十、实现要点与注意事项 ⭐ 审查补充
+
+### 10.0 AI 敌人 ASC 初始化（M2 修复）
+
+单机项目中所有 AI 统一使用 **ASC on Pawn** 模式：
+
+```cpp
+// AZZZCombatEnemy::BeginPlay()
+void AZZZCombatEnemy::BeginPlay()
+{
+    Super::BeginPlay();
+    if (ASC)
+    {
+        ASC->InitAbilityActorInfo(this, this);  // Owner = Avatar = this
+    }
+}
+```
+
+小怪和 Boss 的区分在**配置层面**（Attribute 数值、Ability 数量）而非架构层面。所有敌人统一走 ASC + StateTree 架构。
+
+> **2026-08-01 更新**: 玩家角色已迁移为同一模式（Pawn-ASC，见 8.1/6.2.1）——PlayerState 不再承载 ASC；`AZZZPlayerState` 保留为团队共享数据宿主（喧响值/Decibel，Phase 5）。
+
+### 10.1 Root Motion 与 GAS 同步
+
+ZZZ 攻击带有大量滑步（Sliding）和位移。**强制要求所有攻击 Montage 使用 Root Motion from Montages**。在 `UZZZGameplayAbility` 中通过 `PlayMontageAndWait` Task 触发，确保角色切换时旧角色位移平稳结束或被新角色接管。
+
+> ⚠ **收刀段保持 Root Motion（⭐ 第二轮审查）**: 收刀动作常伴随重心回位位移。如果在 Recovery 段关闭 Root Motion，capsule 停在原位而骨骼动画在移动，会出现明显的"拉回"现象。整个 Montage（Attack + Recovery）期间 Root Motion 必须全程开启。
+
+### 10.2 SetByCaller 使用 FGameplayTag 版本（M3）
+
+UE 5.8 推荐使用 `FGameplayTag` 版本的 `GetSetByCallerMagnitude`：
+
+```cpp
+// ✅ UE 5.8 推荐（FGameplayTag 版本）
+float SkillCoefficient = Spec.GetSetByCallerMagnitude(
+    FGameplayTag::RequestGameplayTag(FName("Data.SkillCoefficient")),
+    false /* bWarnIfNotFound */,
+    1.0f  /* DefaultValue */);
+
+// ❌ 旧式（FName 版本，已不推荐）
+float SkillCoefficient = Spec.GetSetByCallerMagnitude(
+    FName("SkillCoefficient"), false, 1.0f);
+```
+
+### 10.3 视觉反馈走 GameplayCue（L3 修复）
+
+绝不要在 `PostGameplayEffectExecute` 里通过 `SpawnEmitter` 生成特效。**必须通过 `ExecuteGameplayCueOnActor` 走 GAS 内置 RPC 优化链路**。
+
+```
+GE_Damage 应用
+  → Execution 计算伤害/架势/异常
+    → GameplayCue 触发（L3：统一加 ZZZ 前缀防命名冲突）：
+      ├── GC_ZZZ_Impact_Slash (攻击命中特效)
+      ├── GC_ZZZ_HitStop (短促顿帧)
+      ├── GC_ZZZ_CameraShake (震屏)
+      └── GC_ZZZ_DamageNumber (飘字)
+```
+
+### 10.4 PostGameplayEffectExecute 与 Duration GE 区分（M1）
+
+`PostGameplayEffectExecute` **仅在属性 BaseValue 被修改时触发**——即对 **Instant GE** 有效。不同 GE 类型需要不同的回调机制：
+
+| GE 类型 | 属性修改方式 | PostGameplayEffectExecute 触发？ | 推荐回调 |
+|---------|-------------|--------------------------------|---------|
+| Instant（伤害、治疗） | 修改 BaseValue | ✅ 触发 | `PostGameplayEffectExecute` |
+| Duration（Buff 持续减速） | 修改 CurrentValue | ❌ 不触发 | `GetGameplayAttributeValueChangeDelegate()` |
+| Infinite + Stack（异常积蓄） | 修改 CurrentValue | ❌ 不触发 | `GetGameplayAttributeValueChangeDelegate()` |
+
+> 文档中 Phase 3.5 的 `GE_SlowMotion`（Infinite）、Phase 4 的 `GE_AnomalyBuildup_*`（Infinite+Stack）应使用 Delegate 回调，而非依赖 `PostGameplayEffectExecute`。
+
+### 10.5 属性变更避免高频轮询
+
+频繁攻击产生大量 GE 应用和属性变更。**不要让 UI Tick 或 StateTree Condition 轮询属性值**。UI 通过 `UAbilitySystemComponent::GetGameplayAttributeValueChangeDelegate()` 绑定属性变化回调，仅在被修改时更新。
+
+---
+
+## 十一、风险与缓解
+
+| 风险 | 影响 | 缓解措施 |
+|------|------|---------|
+| GAS 学习曲线陡峭 | 开发速度下降 | 先做最小可用原型，逐步扩展 |
+| 动画资源不足 | 连段/特攻/弹刀缺少动画 | 先用 UE Mannequin 站姿占位，后续替换 |
+| 模块拆分引入循环依赖 | 编译失败 | 严格控制依赖方向：Core 不依赖 AI/UI，AI 和 UI 可依赖 Core |
+| ASC 归属方案选择错误 | 后续重构成本高 | Phase 1 明确 PlayerState 方案并验证；2026-08-01 因"独立属性/冷却"需求变更为 Pawn-ASC（8.1），单机下重构成本已兑现但可控 |
+| 性能问题 (GAS 开销) | 帧率下降 | 单机下**所有 AI 统一 ASC on Pawn**（`InitAbilityActorInfo(this, this)`），小怪和 Boss 的区分在配置层面（Attribute 数值、Ability 数量），非架构层面 |
+| Root Motion 网络抖动 ⭐ | 切换角色时位移错位 | 强制 Root Motion from Montages；切换时旧角色平滑结束 |
+| GameplayCue 滥用 ⭐ | RPC 爆炸、性能下降 | 严格遵守：视觉反馈走 GameplayCue，不直接 SpawnEmitter |
+
+---
+
+## 附录 A：参考资料
+
+- UE 5.8 GAS 文档: https://docs.unrealengine.com/5.8/en-US/gameplay-ability-system-for-unreal-engine/
+- UE 5.8 GameplayTags: https://docs.unrealengine.com/5.8/en-US/using-gameplay-tags-in-unreal-engine/
+- UE 5.8 StateTree: https://docs.unrealengine.com/5.8/en-US/state-tree-in-unreal-engine/
+- UE 5.8 Enhanced Input: https://docs.unrealengine.com/5.8/en-US/enhanced-input-in-unreal-engine/
+- GASDocumentation (社区): https://github.com/tranek/GASDocumentation
+- 本项目 CLAUDE.md: `D:\UE5\ZZZCombatRemake\CLAUDE.md`
+
+---
+
+## 附录 B：术语映射
+
+| ZZZ 术语 | 本项目类/概念 |
+|----------|--------------|
+| 普攻 | `UZZZBasicAttack` → `GA_BasicAttack_0X` |
+| 特攻 (EX) | `UZZZSpecialAttack` → `GA_SpecialAttack` |
+| 终结技 | `UZZZUltimate` → `GA_Ultimate` |
+| 闪避 | `UZZZDodge` → `GA_Dodge` |
+| 完美闪避 / 极限闪避 | `State.SlowMotion` + `Ability.Defense.Dodge.Perfect` |
+| 弹刀 / 招架支援 | `UZZZAssistDefensive` → `GA_AssistDefensive` |
+| 突击支援 | `UZZZAssistOffensive` → `GA_AssistOffensive` |
+| 连携技 | `UZZZChainAttack` → `GA_ChainAttack` |
+| 架势 / 失衡 | `UZZZAttributeSet::Daze` / `MaxDaze`（访问器 `GetDazeAttribute()`） |
+| 异常积蓄 | `GE_AnomalyBuildup_*` |
+| 异常爆发 | `GE_Anomaly_*` |
+| 以骸 | `AZZZCombatEnemy` 子类 |
+| 代理人 | `AZZZCharacter` 子类（玩家角色） |
+| Decibel 值 | 终极技能量（全队共享 `UZZZAttributeSet` 或独立的 `UZZZTeamAttributeSet`） |
+
+---
+
+## 附录 C：审查代码要点（来自 Epic Developer Assistant 审查）
+
+> **2026-08-01 更新**: C.1-C.3 的设计均已落地实现，完整代码见 `Source/ZZZCombatRemake/ZZZ/`（路径见各节）。以下仅保留设计要点与实现偏差。
+
+### C.1 UAbilityTask_WaitInputBuffer — 输入缓冲 Task
+
+**实现文件**: `Source/ZZZCombatRemake/ZZZ/Tasks/AbilityTask_WaitInputBuffer.h/.cpp`
+
+设计要点（L4 建议已吸收）：
+- Ability 激活期间监听 `Input.Attack` GameplayEvent（`GenericGameplayEventCallbacks`）；
+- 仅在 `Effect.Input.CanBuffer` 窗口（`AnimNotifyState_InputWindow`）内写入 `AZZZPlayerController::SetBufferedInput()`（**实现对照：写入 PC 缓冲而非 ASC LooseTag**，见 8.3）；窗口外输入直接丢弃；
+- `OnDestroy` 清理回调句柄（H2 修复）；
+- 单机玩家专用（依赖 PlayerController），敌人 AI 不使用。
+
+### C.2 UZZZBasicAttack — 连段 Ability 基类
+
+**实现文件**: `Source/ZZZCombatRemake/ZZZ/Abilities/ZZZBasicAttack.h/.cpp`
+
+设计要点（R4 已实现）：
+- 激活时并行启动 3 个 Task：`PlayMontageAndWait`（蒙太奇）+ `WaitInputBuffer`（缓冲监听）+ `WaitCombo`（事件驱动版，见 8.3 实现对照）；另可选 `AbilityTask_RotateToTarget` 自动转向最近敌人（**实现新增**，非设计项）；
+- `CheckComboTransition()`：**先 `TryActivateAbilityByClass(NextComboAbility)` 再 `EndAbility`**（R4：避免 BlendOut→BlendIn 空窗帧）；
+- 每段攻击一个 Montage + 一个 GA，连段 = Ability 切换（非 Section 跳转）；
+- **实现偏差**：`NextComboAbility`/`ComboIndex`/`AttackMontage` 位于基类 `UZZZGameplayAbility`（设计版在子类），便于 BP 配置；蒙太奇事件回调（Completed/BlendOut/Interrupted/Cancelled）统一在此处理。
+
+### C.3 ZZZDamageExecution — 统一 ExecCalc（⭐ C1/C2/C3 修复）
+
+**实现文件**: `Source/ZZZCombatRemake/ZZZ/Abilities/ZZZDamageExecution.h/.cpp`
+
+设计要点（C1/C2/C3/L1/M3 修复均已落地）：
+- 属性捕获：`FZZZDamageStatics` + `DECLARE/DEFINE_ATTRIBUTE_CAPTUREDEF`（C3），`RelevantAttributesToCapture` 在构造函数注册；
+- 捕获集：Source.Attack / Target.Defense / Target.IncomingDamage / Target.Daze（**实现对照：AnomalyMastery/Health/AnomalyBuildup 捕获推迟到 Phase 4 引入异常系统时再加**）；
+- SetByCaller（M3，FGameplayTag 版）：`Data.Damage`（基础伤害，缺省回退到 Attack 捕获值）、`Data.Daze`（**实现对照 R9：架势积蓄为绝对值，替代设计版公式 `BaseDamage × 0.5 × AnomalyMastery`**）；
+- 公式：`DefenseFactor = Max(0, 1 - Defense/(Defense+500))`，`FinalDamage = Max(0, BaseDamage × DefenseFactor)`；
+- 输出：Target.IncomingDamage（Meta，PostGameplayEffectExecute 消费转扣血）+ Target.Daze（叠加，stun 阈值检测）；
+- `FGameplayModifierEvaluatedData` 第 4 参 `FActiveGameplayEffectHandle` 传空（C1）；`Execute_Implementation` 为 const（L1）。
+
+> **UE 5.8 API 参考**: `FGameplayModifierEvaluatedData` 构造函数的第 4 参数 `FActiveGameplayEffectHandle` 是必选参数，传入空 Handle 表示上下文由 ExecCalc 自动确定。
+
+> **飘字实现（2026-08-01）**: `GC_ZZZ_DamageNumber` 落地为**方案① Screen 空间 WidgetComponent + 对象池**——`UZZZDamageNumberPool`（UObject，PC 持有）预创建 32 个 `AZZZDamageNumberActor`（每个预建一个 `WBP_DamageNumber` widget），命中零 SpawnActor/CreateWidget；widget 颜色经 `UZZZDamageNumberWidget::GetElementColor(tag)` 映射，**为 Phase 4 元素属性伤害留扩展点**。5.8 修复记录见附录 D R18。
+
+---
+
+## 附录 D：审查意见摘要
+
+> 以下来自 **Epic Developer Assistant** 的另一 AI 评审，已整合入文档各处（⭐ 标记）。
+
+| 序号 | 建议 | 是否采纳 | 对应章节 |
+|------|------|---------|---------|
+| **第一轮审查** |
+| 1 | 输入缓冲用 `UAbilityTask_WaitInputBuffer` | ✅ 采纳 | 8.3, Phase 2, 附录 C.1 |
+| 2 | 伤害/Daze/异常的 ExecCalc 统一计算 | ✅ 采纳 | 8.4, 附录 C.3 |
+| 3 | 连携技用 Director 协调器模式 | ✅ 采纳 | 8.5, Phase 5 |
+| 4 | 子弹时间用 CustomTimeDilation | ✅ 采纳 | 8.6, Phase 3.5 |
+| 5 | Phase 1.5: Input → Tag 桥接（Lyra 风格） | ✅ 采纳 | Phase 1.5 |
+| 6 | Phase 3.5: 时间管理与受击反馈 | ✅ 采纳 | Phase 3.5 |
+| 7 | 消灭反馈 Elimination（Hit Stop + 震屏） | ✅ 采纳 | 8.7, Phase 5 |
+| 8 | `UAnimNotifyState_AbilityWindow` | ✅ 采纳 | 8.2, Phase 2 |
+| **第二轮审查** |
+| 9 | AttributeSet 使用 `ATTRIBUTE_ACCESSORS` 宏 + `IncomingDamage` Meta Attribute | ✅ 采纳 | 6.3 |
+| 10 | InputConfig 改为 `TArray<FZZZInputAction>` 结构体数组 | ✅ 采纳 | Phase 1.5 |
+| 11 | ASC 初始化双路径：`PossessedBy` + `OnRep_PlayerState` | ✅ 采纳 | 6.2.1 |
+| 12 | 统一使用 `HandleElimination`/`OnEliminated`，禁用 Kill 关键字 | ✅ 采纳 | 8.7, GameplayTag |
+| 13 | 视觉反馈走 GameplayCue RPC，不直接 SpawnEmitter | ✅ 采纳 | 10.2, 8.7 |
+| 14 | Root Motion from Montages 强制要求 | ✅ 采纳 | 10.1, 风险表 |
+| 15 | Director 连携期间施加 `State.IgnoreInput` + `State.Invulnerable` | ✅ 采纳 | 8.5, GameplayTag |
+| 16 | Phase 5 相机混合：`UCameraModifier` / Cinemachine 风格 | ✅ 采纳 | Phase 5 |
+| **第三轮审查（API 正确性审查）** |
+| C1 | `FGameplayModifierEvaluatedData` 需第 4 参数 `FActiveGameplayEffectHandle` | ✅ 已修复 | 附录 C.3 |
+| C2 | 属性访问器命名 `Get*Attribute()` 去掉 "Current" 前缀 | ✅ 已修复 | 附录 C.3 + 8.4 + 术语表 |
+| C3 | 补充 `DECLARE_ATTRIBUTE_CAPTUREDEF` + `RelevantAttributesToCapture` | ✅ 已修复 | 附录 C.3 |
+| C4 | `PostGameplayEffectExecute` 添加 `Super` 调用 | ✅ 已修复 | 8.7 |
+| H1 | `CustomTimeDilation` 需 AttributeSet `TimeDilation` 桥接 | ✅ 已修复 | 6.3 + 8.6 |
+| H2 | `AbilityTask_WaitInputBuffer::Activate()` ASC 事件绑定 | ✅ 已修复 | 附录 C.1 |
+| H3 | `Input_AbilityInputTagPressed` 补全 ASC GameplayEvent 广播 | ✅ 已修复 | 6.2.1 |
+| H4 | 补全 `ZZZCombatCore.Build.cs` 等子模块依赖声明 | ✅ 已修复 | 4.2 |
+| H5 | 单机简化 ASC 初始化（`OnRep_PlayerState` 注释说明） | ✅ 已修复 | 6.2.1 |
+| M1 | `PostGameplayEffectExecute` 仅 Instant GE → 区分 Duration GE 回调 | ✅ 已修复 | 8.7 + 10.4 |
+| M2 | AI 敌人统一 ASC on Pawn（架构不分层） | ✅ 已修复 | 10.0 + 风险表 |
+| M3 | `SetByCaller` 使用 `FGameplayTag` 版本 API | ✅ 已修复 | 10.2 |
+| M4 | 热路径 `RequestGameplayTag` → `UE_DEFINE_GAMEPLAY_TAG_STATIC` | ✅ 已修复 | 8.7 |
+| M5 | `Released` 事件用于蓄力攻击释放检测 | ✅ 已修复 | 6.2.1 |
+| L1 | `Execute_Implementation` 签名加 `const` | ✅ 已修复 | 附录 C.3 |
+| L2 | 属性命名统一 `Health`/`Daze`（不再混用 `Current*`） | ✅ 已修复 | 术语表 + 8.4 |
+| L3 | `GameplayCue` 加 `ZZZ_` 前缀（防命名冲突） | ✅ 已修复 | 10.3 |
+| L4 | `AbilityTask_WaitInputBuffer` 可继承 `WaitGameplayEvent` | ✅ 已修复 | 附录 C.1 注释 |
+| **第四轮审查（收刀动画 & 连段窗口机制）** | | | |
+| R1 | 收刀动作 = Combo Window：单 Montage 两段式（Attack + Recovery），Recovery 段嵌入 AbilityWindow | ✅ 采纳 | 8.10, 8.2 |
+| R2 | AbilityWindow 使用 GameplayTag（`Effect.Ability.CanCombo`）替代指针引用 | ✅ 采纳 | 8.2, 8.10, 6.4 |
+| R3 | WaitCombo 使用 TickTask 检查（Tag 查询 O(1)） | ✅ 采纳 | 8.10, C.2 |
+| R4 | EndAbility 时机：先激活下一段，再结束当前段（避免 BlendOut→BlendIn 空窗帧） | ✅ 采纳 | 8.3, 8.10, C.2 |
+| R5 | 收刀段全程保持 Root Motion（防止 capsule/骨骼脱节） | ✅ 采纳 | 10.1 |
+| **第五轮审查（实现对照 2026-08-01，代码审核）** | | | |
+| R6 | 缓冲写入 PlayerController 而非 ASC LooseTag（防 tag 残留） | ✅ 采纳 | 8.3, 附录 C.1 |
+| R7 | WaitCombo 事件驱动（RegisterGameplayTagEvent + GameplayEvent 回调）替代 TickTask 轮询 | ✅ 采纳 | 8.3, 8.10 |
+| R8 | 连段窗口关闭时清空 PC 缓冲（防陈旧缓冲污染下次攻击） | ✅ 采纳 | 8.3 |
+| R9 | Daze 积蓄走 SetByCaller 绝对值（`Data.Daze`）替代伤害公式 | ✅ 采纳 | 9.2 |
+| R10 | 新增 `State.Combat.Recovery`（Move 打断）与 `Effect.Input.CanBuffer`（InputWindow） | ✅ 采纳 | 6.4 |
+| R11 | GameplayTag 注册移至模块 `StartupModule`（消除 GameMode ctor 时序竞态，GC 用 `FZZZGameplayTags::Get()` 单一来源） | ✅ 采纳 | 附录 C.3, 8.7 |
+| R12 | 起手门控改查 active instance（`IsBasicAttackActive`），替换恒真的 LooseTag 检查 | ✅ 采纳 | 6.2.1 |
+| **第六轮审查（Pawn-ASC 架构决策变更 2026-08-01）** | | | |
+| R13 | ASC 从 PlayerState 迁移到 Pawn：独立血条/资源/冷却天然隔离；脱手技并行执行；玩家与敌人模式统一（`InitAbilityActorInfo(this,this)` + BeginPlay 初始化） | ✅ 采纳 | 8.1, 6.2.1, 10.0 |
+| R14 | Pawn-ASC 依赖 Actor Tick 推进 Duration GE（冷却/后台 DoT）——角色与敌人 `PrimaryActorTick.bCanEverTick = true`；隐藏成员不可停 Actor Tick | ✅ 采纳 | 8.1 注 |
+| R15 | 切换流程只做物理切换（隐藏旧+显示新+Possess），不 CancelAbilities/不停蒙太奇（脱手技需要旧角色继续执行）；仅清空 PC 输入缓冲 | ✅ 采纳 | 6.2.1 |
+| R16 | 成员持久化 + 隐藏/禁碰撞（非销毁）：`SquadMembers` 复用实例，`RotateToTarget` 跳过隐藏 actor | ✅ 采纳 | Phase 3 注 |
+| R17 | 角色切换原型 PIE 验证通过（2026-08-01）：持久化切换、独立属性、`Started` 单次触发、无残留/无重复 spec | ✅ 已验证 | Phase 3 注 |
+| **第七轮审查（飘字管线修复 2026-08-01）** | | | |
+| R18 | GameplayCue 注册三连修：① ini 数组必须用 `+Prop=` 逐元素语法（`=(path)` 带括号解析导致资产扫描失败）；② cue tag 移入 `DefaultGameplayTags.ini`（先于 CDO 构造，BP 子类才继承到有效 tag）；③ `IsOverride`（5.8 改名，非 `bIsOverride`）。5.8 API 事实：`FGameplayCueParameters::TargetActor` 已移除、`UAbilitySystemGlobals::GetGameplayCueNotifyPaths()`、`FWidgetAnimationDynamicEvent` 零参委托 | ✅ 已修复 | 10.3 |
+| R19 | 飘字选定方案① Screen 空间 WidgetComponent + 对象池（`UZZZDamageNumberPool`，预建 32、上限 64）+ 元素色扩展点 `GetElementColor(tag)`（Phase 4 填映射） | ✅ 已实现 | 10.3 |
+| **第八轮审查（敌人攻击预警黄闪调试 2026-08-08）** | | | |
+| R20 | `GameplayCueName` 注册表镜像坑：GCN 扫描（`BuildCuesToAddToGlobalSet`）读 FAssetData 的 FName 镜像而非 CDO，None 即 unmapped 静默丢弃；引擎资产名派生逻辑（`DeriveGameplayCueTagFromAssetName`）在 CDO 构造/保存时把镜像擦成 None 且不恢复——必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步，资产需重新保存（save 不标 dirty 不落盘） | ✅ 已修复 | 8.11 |
+
+### 审查结论
+
+> "该方案已经超越了基础的复刻，达到了生产环境级别的设计标准。Phase 1.5 和 Phase 2 是重中之重——如果输入缓冲和 GAS 桥接做得不扎实，后续的连携技和手感调优会非常痛苦。"
+>
+> — Epic Developer Assistant (第二轮评审)
+>
+> **第四轮评审**：
+>
+> "收刀动画方案属于工业级动作游戏的标准实现模式（常见于《战神》、《鬼泣》及《绝区零》）。它将'视觉上的后摇'转化为'逻辑上的输入窗口'，极大地提升了手感的灵活性。AbilityWindow 的 GameplayTag 方案比指针引用更解耦、更可调试。EndAbility 先激活后结束的顺序是 GAS 连段的关键细节——BlendOut 和 BlendIn 的空窗帧会破坏手感。"
+>
+> — Epic Developer Assistant (第四轮评审, 2026-07-21)
+
+### 下一步行动（2026-08-08 更新）
+
+✅ **已完成**: Phase 1（GAS 基础设施）/ 1.5（输入→Tag 桥接）/ 2（普攻连段 + 双窗口输入缓冲 + 伤害管线 + 飘字）；文档-实现偏差已对照回写（附录 D R6-R12）；敌人攻击预警黄闪 **全链路完成**（tag + `UGC_ZZZ_EnemyAttackWarning` + Niagara 依赖 + `GameplayCueName` 注册表镜像修复 R20，PIE 验证 3 轮攻击黄闪正常，见 8.11）。
+
+⬜ **接下来**:
+1. ~~Phase 3 前置原型：角色切换最小验证~~ → ✅ 已完成（2026-08-01，见 Phase 3 注）
+2. **正式进入 Phase 3**（闪避/完美闪避/弹刀/编队切换 + 入场出场动画接驳）
+3. ~~敌人攻击预警黄闪·编辑器侧~~ → ✅ 已完成（2026-08-08，含 R20 修复，见 8.11）；遗留：`GC_ZZZ_DamageNumber` 补同款 `GameplayCueName` 重写（防重存复发）
+4. 模块拆分 `ZZZCombatCore`（第四章）——当前仍单模块，按需再拆（CLAUDE.md 允许精简为 2 模块）
+5. 数据驱动落地（9.1）：`UZZZCharacterData` DataAsset 替换 `UZZZAttributeSet` 构造函数的硬编码默认值
+6. `AbilityTask_DoTrace` 迁移（Phase 2 遗留项）

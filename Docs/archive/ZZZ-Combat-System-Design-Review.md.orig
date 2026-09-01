@@ -1,0 +1,569 @@
+# ZZZ-Combat-System-Design.md 审核报告
+
+> **审核对象**: `Docs/ZZZ-Combat-System-Design.md` (1187 行)  
+> **审核依据**: UE 5.8 官方 API 文档 + Epic 最佳实践 + GASDocumentation 社区参考  
+> **审核日期**: 2026-07-12  
+> **项目上下文**: 单机项目（非多人联机）
+
+---
+
+## 一、总体评价
+
+方案整体架构**正确且成熟**——GAS 引入、模块拆分、ExecCalc 统一计算、Director 模式连携调度、GameplayTag 层级设计、增量替换策略等核心决策均符合 UE 5.8 最佳实践。
+
+审核共发现 **18 个问题**：4 个 CRITICAL（会导致编译失败或静默失效）、5 个 HIGH（运行时异常或功能缺失）、5 个 MEDIUM（设计偏差）、4 个 LOW（文档完善）。**CRITICAL 和 HIGH 问题需要在 Phase 1 编码前修复**，其余可在开发过程中逐步解决。
+
+---
+
+## 二、CRITICAL（会导致编译失败或运行时 Bug）
+
+### C1. ExecCalc 中 `FGameplayModifierEvaluatedData` 构造函数缺少第 4 参数
+
+**位置**: 附录 C.3（第 1125–1144 行）
+
+**问题**: 文档使用 3 参数构造 `FGameplayModifierEvaluatedData`：
+
+```cpp
+// ❌ 文档当前（缺少第 4 参数）
+FGameplayModifierEvaluatedData(
+    UZZZAttributeSet::GetCurrentDazeAttribute(),
+    EGameplayModOp::Additive,
+    BuildupAmount)
+```
+
+**UE 5.8 API 实际签名**需要 4 个参数：
+
+```cpp
+// ✅ 正确
+FGameplayModifierEvaluatedData(
+    const FGameplayAttribute& InAttribute,
+    TEnumAsByte<EGameplayModOp::Type> InModOp,
+    float InMagnitude,
+    FActiveGameplayEffectHandle InHandle   // 缺少此参数
+);
+```
+
+**修复**:
+
+```cpp
+OutExecutionOutput.AddOutputModifier(
+    FGameplayModifierEvaluatedData(
+        UZZZAttributeSet::GetDazeAttribute(),
+        EGameplayModOp::Additive,
+        BuildupAmount,
+        FActiveGameplayEffectHandle()));
+
+OutExecutionOutput.AddOutputModifier(
+    FGameplayModifierEvaluatedData(
+        UZZZAttributeSet::GetHealthAttribute(),
+        EGameplayModOp::Additive,
+        -BaseDamage,
+        FActiveGameplayEffectHandle()));
+
+OutExecutionOutput.AddOutputModifier(
+    FGameplayModifierEvaluatedData(
+        UZZZAttributeSet::GetAnomalyAttribute(),
+        EGameplayModOp::Additive,
+        BuildupAmount * 0.3f,
+        FActiveGameplayEffectHandle()));
+```
+
+> **参考**: [FGameplayModifierEvaluatedData Constructor (UE 5.8 API)](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/FGameplayModifierEvaluatedData/__ctor/2)
+
+---
+
+### C2. ExecCalc 中属性访问器名称不匹配
+
+**位置**: 附录 C.3（第 1127, 1134, 1142 行）
+
+**问题**: 文档使用 `GetCurrentDazeAttribute()`, `GetCurrentHPAttribute()`, `GetCurrentAnomalyAttribute()`，但 AttributeSet 中属性名为 `Daze`, `Health`。`ATTRIBUTE_ACCESSORS` 宏生成的访问器为：
+
+```cpp
+// ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Health) 生成：
+static FGameplayAttribute GetHealthAttribute();   // ✅
+float GetHealth() const;                          // ✅
+
+// ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Daze) 生成：
+static FGameplayAttribute GetDazeAttribute();     // ✅
+float GetDaze() const;                            // ✅
+
+// 不存在以下名称：
+GetCurrentDazeAttribute()   // ❌
+GetCurrentHPAttribute()     // ❌
+GetCurrentAnomalyAttribute() // ❌
+```
+
+**修复**: 统一定名为 `Get{PropertyName}Attribute()`，去掉 "Current" 前缀。
+
+---
+
+### C3. ExecCalc 中捕获定义 (`DECLARE_ATTRIBUTE_CAPTUREDEF`) 完全缺失
+
+**位置**: 附录 C.3（第 1101–1145 行）
+
+**问题**: `Execute_Implementation` 中调用了 `DamageStatics().AttackDef`、`DamageStatics().AnomalyMasteryDef`，但代码**完全没有**展示其声明和注册逻辑。缺失以下代码：
+
+- `DECLARE_ATTRIBUTE_CAPTUREDEF` / `DEFINE_ATTRIBUTE_CAPTUREDEF` 宏
+- 构造函数中的 `RelevantAttributesToCapture.Add(...)`
+
+**后果**: `AttemptCalculateCapturedAttributeMagnitude` 会**静默返回 0**（不报错），伤害/架势/异常计算全部失效。
+
+**修复** — 在 `.cpp` 文件顶部补充完整捕获定义：
+
+```cpp
+// ===== 捕获定义结构体 =====
+struct FZZZDamageStatics
+{
+    DECLARE_ATTRIBUTE_CAPTUREDEF(Attack);
+    DECLARE_ATTRIBUTE_CAPTUREDEF(Defense);
+    DECLARE_ATTRIBUTE_CAPTUREDEF(AnomalyMastery);
+    DECLARE_ATTRIBUTE_CAPTUREDEF(Daze);
+    DECLARE_ATTRIBUTE_CAPTUREDEF(Health);
+    DECLARE_ATTRIBUTE_CAPTUREDEF(Anomaly);
+
+    FZZZDamageStatics()
+    {
+        // Source = 从攻击者捕获, Target = 从受击者捕获
+        // Snapshot = false 表示在 GE 执行时实时读取
+        DEFINE_ATTRIBUTE_CAPTUREDEF(UZZZAttributeSet, Attack,          Source, false);
+        DEFINE_ATTRIBUTE_CAPTUREDEF(UZZZAttributeSet, AnomalyMastery,  Source, false);
+        DEFINE_ATTRIBUTE_CAPTUREDEF(UZZZAttributeSet, Daze,            Target, false);
+        DEFINE_ATTRIBUTE_CAPTUREDEF(UZZZAttributeSet, Health,          Target, false);
+        DEFINE_ATTRIBUTE_CAPTUREDEF(UZZZAttributeSet, Anomaly,         Target, false);
+    }
+};
+
+static const FZZZDamageStatics& DamageStatics()
+{
+    static FZZZDamageStatics DStatics;
+    return DStatics;
+}
+
+// ===== 构造函数中注册 =====
+UZZZDamageExecution::UZZZDamageExecution()
+{
+    RelevantAttributesToCapture.Add(DamageStatics().AttackDef);
+    RelevantAttributesToCapture.Add(DamageStatics().AnomalyMasteryDef);
+    RelevantAttributesToCapture.Add(DamageStatics().DazeDef);
+    RelevantAttributesToCapture.Add(DamageStatics().HealthDef);
+    RelevantAttributesToCapture.Add(DamageStatics().AnomalyDef);
+}
+```
+
+> **参考**: [FGameplayEffectCustomExecutionParameters::AttemptCalculateCapturedAttributeMagnitude](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/FGameplayEffectCustomExecutionPa-/AttemptCalculate-#parameters)
+
+---
+
+### C4. `PostGameplayEffectExecute` 中缺少 `Super` 调用
+
+**位置**: 第 8.7 节（第 829 行）
+
+**问题**: 实现中未调用 `Super::PostGameplayEffectExecute(Data)`。`UAttributeSet` 基类实现包含内部逻辑，跳过 Super 调用可能导致不可预期的行为。
+
+**修复**:
+
+```cpp
+void UZZZAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data)
+{
+    Super::PostGameplayEffectExecute(Data);  // ← 必须加在第一行
+
+    // ... 后续业务逻辑
+}
+```
+
+> **参考**: [UAttributeSet::PostGameplayEffectExecute (UE 5.8 API)](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/UAttributeSet/PostGameplayEffectExecute)
+
+---
+
+## 三、HIGH（运行时异常或功能缺失）
+
+### H1. `CustomTimeDilation` 不是 GAS 属性 — GE 无法直接修改
+
+**位置**: 第 8.6 节（子弹时间方案）
+
+**问题**: 文档提出用 `GE_SlowMotion` (Infinite GE) 修改 `CustomTimeDilation`，但 `CustomTimeDilation` 是 `AActor` 的原生 float 属性，**不是** `FGameplayAttributeData`。GE 只能修改 `UAttributeSet` 中的 `FGameplayAttributeData`，无法直接修改 AActor 属性。当前方案存在 **GAS 桥接缺口**。
+
+**推荐修复（方案 B — AttributeSet 桥接）**:
+
+```cpp
+// 1. AttributeSet 中添加桥接属性
+UPROPERTY(BlueprintReadOnly, Category = "Attributes|Time")
+FGameplayAttributeData TimeDilation;
+ATTRIBUTE_ACCESSORS(UZZZAttributeSet, TimeDilation)
+
+// 2. PostGameplayEffectExecute 中桥接到 AActor
+if (Data.EvaluatedData.Attribute == GetTimeDilationAttribute())
+{
+    if (AActor* Owner = GetOwningActor())
+    {
+        Owner->CustomTimeDilation = GetTimeDilation();
+    }
+}
+```
+
+然后在 `GE_SlowMotion` 中配置 Modifier 修改 `TimeDilation` 属性（值为 0.1），通过 `FGameplayTagQuery` 筛选只作用于 `State.Enemy` 标记的目标。
+
+---
+
+### H2. `AbilityTask_WaitInputBuffer::Activate()` 实现缺失
+
+**位置**: 附录 C.1（第 1017–1049 行）
+
+**问题**: `UAbilityTask_WaitInputBuffer` 只展示了类声明和工厂方法，**完全省略了 `Activate()` 实现**——即如何监听 ASC 的 GameplayEvent 回调。没有这个绑定，Task 永远不会收到输入事件。
+
+**修复** — 补充核心绑定逻辑：
+
+```cpp
+void UAbilityTask_WaitInputBuffer::Activate()
+{
+    Super::Activate();
+
+    if (UAbilitySystemComponent* ASC = GetTargetASC())
+    {
+        // 注册监听特定 InputTag 的 GameplayEvent
+        FOnGameplayEventReceivedDelegate* Delegate =
+            ASC->GenericGameplayEventCallbacks.Find(TargetTag);
+        if (Delegate)
+        {
+            DelegateHandle = Delegate->AddUObject(
+                this, &UAbilityTask_WaitInputBuffer::OnInputPressed);
+        }
+    }
+}
+
+void UAbilityTask_WaitInputBuffer::OnDestroy(bool bInOwnerFinished)
+{
+    // 清理绑定的回调
+    if (UAbilitySystemComponent* ASC = GetTargetASC())
+    {
+        FOnGameplayEventReceivedDelegate* Delegate =
+            ASC->GenericGameplayEventCallbacks.Find(TargetTag);
+        if (Delegate && DelegateHandle.IsValid())
+        {
+            Delegate->Remove(DelegateHandle);
+        }
+    }
+    Super::OnDestroy(bInOwnerFinished);
+}
+```
+
+---
+
+### H3. InputConfig → ASC GameplayEvent 广播链路缺失
+
+**位置**: 第 6.2.1 节（`SetupPlayerInputComponent` 实现）+ Phase 1.5
+
+**问题**: 文档展示了 Enhanced Input 绑定到 `Input_AbilityInputTagPressed` 的链路，但**未展示最关键的一步**——将 `FGameplayTag` 作为 GameplayEvent 广播给 ASC。没有这一步，Ability 的 `AbilityTriggers` 永远不会收到事件，`TryActivateAbilitiesByTag` 也不会被执行。
+
+**修复** — 补充完整实现：
+
+```cpp
+void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+
+    // 1. 发送 GameplayEvent（供 AbilityTask_WaitInputBuffer 等监听）
+    FGameplayEventData EventData;
+    EventData.Instigator = this;
+    ASC->HandleGameplayEvent(InputTag, &EventData);
+
+    // 2. 通过 Tag 尝试激活匹配的 Ability
+    ASC->TryActivateAbilitiesByTag(FGameplayTagContainer(InputTag));
+}
+
+void AZZZCharacter::Input_AbilityInputTagReleased(FGameplayTag InputTag)
+{
+    if (!ASC) return;
+    // 通知 ASC 释放对应的 Input Tag（蓄力攻击取消等场景）
+    ASC->NotifyAbilityInputReleased(InputTag);
+}
+```
+
+> 单机项目中 `PossessedBy` 中调用 `InitAbilityActorInfo` 即可，不需要 `OnRep_PlayerState` 双路径。
+
+---
+
+### H4. 子模块 Build.cs 依赖声明不完整
+
+**位置**: 第 4.2 节
+
+**问题**: 4 模块拆分方案中，`ZZZCombatCore` 持有所有 Ability 类、AttributeSet、ExecCalc，必须依赖 `GameplayAbilities`/`GameplayTags`/`GameplayTasks`，但其 Build.cs 未在文档中展示。
+
+**修复** — 补充 `ZZZCombatCore.Build.cs`：
+
+```csharp
+// ZZZCombatCore.Build.cs
+PublicDependencyModuleNames.AddRange(new string[] {
+    "Core",
+    "CoreUObject",
+    "Engine",
+    "GameplayAbilities",
+    "GameplayTags",
+    "GameplayTasks"
+});
+```
+
+---
+
+### H5. 单机下 ASC 初始化路径可简化
+
+**位置**: 第 6.2.1 节
+
+**问题**: 文档展示了 `PossessedBy` + `OnRep_PlayerState` 双路径初始化（为多人联机的 Server/Client 分别设计）。在单机项目中，`OnRep_PlayerState` 路径**永远不会被触发**（PlayerState 在同一个进程内直接赋值，不经过网络复制）。
+
+**修复**: 单机下只需 `PossessedBy` 一处初始化：
+
+```cpp
+void AZZZCharacter::PossessedBy(AController* NewController)
+{
+    Super::PossessedBy(NewController);
+    InitAbilitySystem();  // 单机中这一处就够
+}
+// OnRep_PlayerState 可保留空实现或移除，单机中不会触发
+```
+
+---
+
+## 四、MEDIUM（设计偏差 / 未覆盖边界情况）
+
+### M1. `PostGameplayEffectExecute` 只对 Instant GE 触发
+
+**位置**: 第 8.7 节 + Phase 3.5 + Phase 4
+
+**问题**: `PostGameplayEffectExecute` **仅在属性 BaseValue 被修改时触发**——即仅对 **Instant GE** 有效。
+
+文档中以下场景使用了 Duration/Infinite GE，它们的属性修改**不会触发** PostGameplayEffectExecute：
+
+| 场景 | GE 类型 | 属性修改方式 | PostGameplayEffectExecute 触发？ |
+|------|---------|-------------|--------------------------------|
+| Phase 3.5: `GE_SlowMotion` | Infinite | 修改 CurrentValue | ❌ 不触发 |
+| Phase 4: `GE_AnomalyBuildup_*` | Infinite + Stack | 修改 CurrentValue | ❌ 不触发 |
+| Phase 2: `GE_Damage` | Instant | 修改 BaseValue | ✅ 触发 |
+
+**建议**: 文档中区分两种回调机制：
+
+- **Instant GE** → `PostGameplayEffectExecute`（伤害、治疗等一次性效果）
+- **Duration/Infinite GE** → `UAbilitySystemComponent::GetGameplayAttributeValueChangeDelegate()`（Buff 监控、UI 更新、异常积蓄阈值检测）
+
+> **参考**: [UE 5.8 Gameplay Effects](https://dev.epicgames.com/documentation/unreal-engine/gameplay-effects-for-the-gameplay-ability-system-in-unreal-engine)
+
+---
+
+### M2. AI 敌人 ASC 归属策略不明确
+
+**位置**: 第 11 节风险表（"ASC 仅在 PlayerState 和 Boss 上启用；小怪使用轻量 Attribute"）
+
+**问题**: 该表述暗示小怪不使用 ASC，但整个 AI 系统（StateTree 条件读取 GameplayTag、受击硬直、异常状态）依赖于 ASC。轻量 Attribute 的具体方案也未定义。
+
+**建议**: 在单机项目中，**所有 AI 统一使用 ASC on Pawn**，无需区分层级：
+
+```cpp
+// AZZZCombatEnemy::BeginPlay()
+void AZZZCombatEnemy::BeginPlay()
+{
+    Super::BeginPlay();
+    if (ASC)
+    {
+        ASC->InitAbilityActorInfo(this, this);  // Owner = Avatar = this
+    }
+}
+```
+
+小怪和大怪的区分在**配置层面**（Attribute 数值、Ability 数量）而非架构层面。
+
+---
+
+### M3. `SetByCaller` 应使用 `FGameplayTag` 版本
+
+**位置**: 文档未直接展示，但涉及伤害计算的 GE 配置
+
+**问题**: UE 5.8 推荐使用 `FGameplayTag` 版本的 `GetSetByCallerMagnitude`：
+
+```cpp
+// ✅ UE 5.8 推荐
+float SkillCoefficient = Spec.GetSetByCallerMagnitude(
+    FGameplayTag::RequestGameplayTag(FName("Data.SkillCoefficient")),
+    false,   // bWarnIfNotFound
+    1.0f);   // DefaultValue
+
+// ❌ 旧式
+float SkillCoefficient = Spec.GetSetByCallerMagnitude(
+    FName("SkillCoefficient"), false, 1.0f);
+```
+
+---
+
+### M4. 热路径中 `FGameplayTag::RequestGameplayTag` 性能问题
+
+**位置**: 第 8.7 节（第 843, 861 行）
+
+**问题**: `PostGameplayEffectExecute` 是热路径（每次伤害、每次 Daze 变更都会触发），其中使用 `FGameplayTag::RequestGameplayTag("Event.Combat.Elimination")` 进行字符串查找，开销不可忽略。
+
+**修复** — 使用静态初始化：
+
+```cpp
+// 在 .cpp 文件顶部
+namespace ZZZGameplayTags
+{
+    UE_DEFINE_GAMEPLAY_TAG_STATIC(Event_Combat_Elimination, "Event.Combat.Elimination");
+    UE_DEFINE_GAMEPLAY_TAG_STATIC(Event_Combat_Stun,       "Event.Combat.Stun");
+}
+
+// 使用（无字符串查找开销）
+Data.Target.Get()->HandleGameplayEvent(
+    ZZZGameplayTags::Event_Combat_Elimination, &EventData);
+```
+
+---
+
+### M5. InputConfig 中 `Released` 事件的用途未说明
+
+**位置**: 第 6.2.1 节 + Phase 1.5
+
+**问题**: `SetupPlayerInputComponent` 同时绑定了 `Triggered` 和 `Completed` 事件，但文档未说明 `Released` (`Completed`) 事件的用途。在 ZZZ 中，这是蓄力攻击释放时机的关键信号。
+
+**建议**: 在文档中补充说明——`Pressed`/`Triggered` 用于普通攻击、闪避等即时技能；`Released`/`Completed` 用于蓄力攻击（检测蓄力时长并决定释放等级）。
+
+---
+
+## 五、LOW（文档完善 / 命名一致性）
+
+### L1. ExecCalc 函数签名缺少 `const`
+
+**位置**: 附录 C.3（第 1104 行）
+
+```cpp
+// ❌ 文档当前
+void UZZZDamageExecution::Execute_Implementation(...)
+
+// ✅ 正确（匹配基类声明）
+void UZZZDamageExecution::Execute_Implementation(...) const
+```
+
+---
+
+### L2. 属性命名不一致
+
+**位置**: 第 6.3 节 vs 附录 B vs 附录 C.3
+
+| 出处 | 命名 | 一致性 |
+|------|------|--------|
+| AttributeSet (6.3) | `Health`, `Daze` | ✅ 基准 |
+| 术语表 (附录 B) | `CurrentDaze` | ❌ 多了 "Current" 前缀 |
+| ExecCalc (C.3) | `GetCurrentDazeAttribute()` | ❌ 与 ATTRIBUTE_ACCESSORS 生成的名称不匹配 |
+
+**建议**: 统一使用 `Health` / `Daze`，访问器为 `GetHealthAttribute()` / `GetDazeAttribute()`。
+
+---
+
+### L3. GameplayCue 命名建议加项目前缀
+
+**位置**: 第 10.2 节
+
+```cpp
+// 当前
+GC_Impact_Slash, GC_Impact_HitStop, GC_CameraShake, GC_DamageNumber
+
+// 建议（避免与插件/商城资源的 Cue 命名冲突）
+GC_ZZZ_Impact_Slash, GC_ZZZ_HitStop, GC_ZZZ_CameraShake, GC_ZZZ_DamageNumber
+```
+
+---
+
+### L4. `UAbilityTask_WaitInputBuffer` 可评估使用引擎内置 Task
+
+**位置**: Phase 2 + 附录 C.1
+
+UE 5.8 内置 `UAbilityTask_WaitGameplayEvent` 已经实现了监听特定 GameplayTag Event 的功能。`UAbilityTask_WaitInputBuffer` 可以**继承** `UAbilityTask_WaitGameplayEvent` 并添加缓冲逻辑（`Input.Buffered.*` Tag 写入、缓冲窗口计时器），避免从零实现 ASC 事件绑定。
+
+```cpp
+// 建议的继承方式
+UCLASS()
+class UAbilityTask_WaitInputBuffer : public UAbilityTask_WaitGameplayEvent
+{
+    // 复用基类的 ASC 事件绑定 + 网络处理
+    // 只添加缓冲逻辑：监听触发 → 写入 Input.Buffered.* Tag
+};
+```
+
+---
+
+## 六、确认正确的关键决策 ✅
+
+以下方案已通过 UE 5.8 官方文档和社区最佳实践验证：
+
+| 决策 | 验证结果 |
+|------|---------|
+| 引入 GAS 替代手动接口 | ✅ ZZZ 的复杂状态交互需要 GAS 的 Tag/GE/Ability 体系 |
+| 增量替换策略（不破坏 Variant_Combat） | ✅ 降低风险，保留回滚基线 |
+| ASC 归属 PlayerState（三人编队切换场景） | ✅ 切换角色时状态跟随玩家，架构合理 |
+| ExecCalc 统一计算 HP/Daze/Anomaly | ✅ 一次调用完成全部计算，避免时序问题 |
+| CustomTimeDilation 而非 SetGlobalTimeDilation | ✅ 避免影响 UI/音效，方向正确（需补充 H1 桥接） |
+| GameplayCue 管理视觉反馈 | ✅ 走 GAS 内置 RPC 链路，不直接 SpawnEmitter |
+| Director 模式协调连携技 | ✅ 集中调度，Tag 驱动，逻辑清晰 |
+| 模块拆分依赖方向 | ✅ Core 不依赖 AI/UI，无循环依赖风险 |
+| GameplayTag 层级设计 | ✅ 命名空间清晰完整 |
+| StateTree 驱动 AI + 读取 GameplayTag | ✅ UE 5.8 StateTree 原生支持 GameplayTag 条件 |
+| Root Motion from Montages | ✅ 攻击位移一致性的必要条件 |
+| Animation → AnimNotifyState_AbilityWindow | ✅ 动画窗口中标记连段可触发区间，与 AbilityTask 配合 |
+
+---
+
+## 七、问题汇总
+
+| 编号 | 严重程度 | 位置 | 问题摘要 |
+|------|---------|------|---------|
+| C1 | CRITICAL | 附录 C.3 | `FGameplayModifierEvaluatedData` 缺少第 4 参数 `FActiveGameplayEffectHandle` |
+| C2 | CRITICAL | 附录 C.3 | 属性访问器名 `GetCurrent*Attribute()` 应为 `Get*Attribute()` |
+| C3 | CRITICAL | 附录 C.3 | 缺失 `DECLARE_ATTRIBUTE_CAPTUREDEF` / `RelevantAttributesToCapture` |
+| C4 | CRITICAL | 8.7 节 | `PostGameplayEffectExecute` 缺少 `Super` 调用 |
+| H1 | HIGH | 8.6 节 | CustomTimeDilation 非 GAS 属性，需 AttributeSet 桥接 |
+| H2 | HIGH | 附录 C.1 | AbilityTask_WaitInputBuffer 的 ASC 事件绑定实现缺失 |
+| H3 | HIGH | 6.2.1 节 | InputConfig → ASC GameplayEvent 广播链路缺失 |
+| H4 | HIGH | 4.2 节 | 子模块 Build.cs 依赖声明不完整 |
+| H5 | HIGH | 6.2.1 节 | 单机下可简化初始化路径，去掉 OnRep_PlayerState |
+| M1 | MEDIUM | 8.7 节 | PostGameplayEffectExecute 只对 Instant GE 触发 |
+| M2 | MEDIUM | 11 节 | AI 敌人 ASC 归属策略不明确 |
+| M3 | MEDIUM | — | SetByCaller 建议使用 FGameplayTag 版 API |
+| M4 | MEDIUM | 8.7 节 | RequestGameplayTag 在热路径中的性能问题 |
+| M5 | MEDIUM | 6.2.1 节 | Input Released 事件用途未说明 |
+| L1 | LOW | 附录 C.3 | Execute_Implementation 缺少 const |
+| L2 | LOW | 多处 | 属性命名不一致（Health vs CurrentHP vs CurrentDaze） |
+| L3 | LOW | 10.2 节 | GameplayCue 命名建议加 ZZZ 前缀 |
+| L4 | LOW | 附录 C.1 | AbilityTask 可继承引擎内置 WaitGameplayEvent |
+
+---
+
+## 八、修复优先级
+
+```
+Phase 1 编码前必须修复:
+  ██ C1-C4 (CRITICAL — API 正确性)
+  ██ H1-H3 (HIGH — 核心功能缺失)
+  ██ H4    (HIGH — 编译依赖)
+
+Phase 1-2 期间修复:
+  ██ H5    (HIGH — 单机简化)
+  ██ M1-M5 (MEDIUM — 设计偏差)
+
+Phase 2-3 期间修复:
+  ██ L1-L4 (LOW — 文档完善)
+```
+
+---
+
+## 附录：参考资料
+
+- [UE 5.8 Gameplay Ability System](https://dev.epicgames.com/documentation/unreal-engine/gameplay-ability-system-for-unreal-engine?application_version=5.8)
+- [UE 5.8 Gameplay Attributes and Attribute Sets](https://dev.epicgames.com/documentation/unreal-engine/gameplay-attributes-and-attribute-sets-for-the-gameplay-ability-system-in-unreal-engine?application_version=5.8)
+- [UE 5.8 Gameplay Effects](https://dev.epicgames.com/documentation/unreal-engine/gameplay-effects-for-the-gameplay-ability-system-in-unreal-engine)
+- [UE 5.8 Ability Tasks](https://dev.epicgames.com/documentation/unreal-engine/gameplay-ability-tasks-in-unreal-engine?application_version=5.8)
+- [UE 5.8 Enhanced Input](https://docs.unrealengine.com/5.8/en-US/enhanced-input-in-unreal-engine/)
+- [UE 5.8 StateTree](https://docs.unrealengine.com/5.8/en-US/state-tree-in-unreal-engine/)
+- [UE 5.8 Gameplay Tags](https://docs.unrealengine.com/5.8/en-US/using-gameplay-tags-in-unreal-engine/)
+- [UE 5.8 GameplayCue](https://dev.epicgames.com/documentation/unreal-engine/gameplay-cues-in-unreal-engine)
+- [GAS Best Practices (Epic Dev Community)](https://dev.epicgames.com/community/learning/tutorials/DPpd/unreal-engine-gameplay-ability-system-best-practices-for-setup)
+- [GASDocumentation (社区)](https://github.com/tranek/GASDocumentation)
+- [FGameplayModifierEvaluatedData Constructor](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/FGameplayModifierEvaluatedData/__ctor/2)
+- [FGameplayEffectCustomExecutionParameters](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/FGameplayEffectCustomExecutionPa-/AttemptCalculate-#parameters)
+- [UAttributeSet::PostGameplayEffectExecute](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/GameplayAbilities/UAttributeSet/PostGameplayEffectExecute)
