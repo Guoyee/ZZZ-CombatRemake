@@ -51,6 +51,8 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 7. **收刀 = 连段窗口 + 标准打断流程**：单 Montage 双 Section（Attack + Recovery）；连段过渡**先激活下一段再 EndAbility**（防 BlendOut→BlendIn 空窗）；收刀段全程 Root Motion。**收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 `AnimNotify_SendGameplayEvent(EndEventTag)` **决定 GA 结束位置**（GA 提前 EndAbility，`bStopWhenAbilityEnds=false`；`EndEventTag` 未配置时默认 `Event.Combat.AttackEnd`（2026-08-29，基类惰性解析，GA_Dodge 覆盖为 `DodgeEnd`））→ ② 收刀段**无主播放** + 挂 `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`）**查询 tag → StopAnimMontage → 消费方显式清除 tag**（`RemoveLooseGameplayTag`；无主段 EndAbility 兜底不可达——GA 已结束，见规则 1 A 层双轨②）。**不调用 CancelAbilities**——GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（2026-08-29 定稿）；现 `Move()` 中的 Cancel 为旧方式残留（现有 basic attack 依赖），新技能不依赖。
 8. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接赋 `CustomTimeDilation` 属性）；`FGameplayModifierEvaluatedData` 构造必须 4 参；SetByCaller 用 FGameplayTag 版；UFUNCTION 参数禁止 struct 裸指针（`const FGameplayEventData*` 会 UHT 报错，用 GenericGameplayEventCallbacks + lambda）。
 
+9. **文档同步（唯一规则，2026-09-02 定稿，取代曾试行的分层/戳/状态文件方案）**：文档过期是常态，不靠维护仪式防误导——发现文档与代码 / 较新定稿矛盾时，**以代码和最近定稿为准，当场把文档改对**（来不及则节首盖 `⚠ 过期 YYYY-MM-DD`，新机制记入下方「当前状态」），禁止按旧文档实现、禁止静默忽略；凡改变机制/流程的 Task 收尾，覆盖式更新下方「当前状态」（≤10 行、带日期）并与代码同 commit。
+
 ## MCP 资产操作规则
 
 - **只读**：read / list / get_* / describe_*。
