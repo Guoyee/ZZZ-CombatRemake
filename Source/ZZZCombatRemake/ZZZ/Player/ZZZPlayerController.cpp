@@ -9,12 +9,73 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/GameplayCameraComponent.h"
+#include "GameFramework/GameplayCamerasPlayerCameraManager.h"
 #include "InputCoreTypes.h"
 #include "ZZZCharacter.h"
 #include "ZZZCombatEnemy.h"
 #include "ZZZCombatRemake.h"
 #include "ZZZDamageNumberPool.h"
 #include "ZZZDamageNumberWidget.h"
+
+AZZZPlayerController::AZZZPlayerController(const FObjectInitializer& ObjectInit)
+	: Super(ObjectInit)
+{
+	// Gameplay Cameras manager (2026-09-01): a SINGLE camera system hosts every
+	// squad member's evaluation context, so view-target changes on switch blend
+	// through CA_PlayerCameras' EnterTransitions. Per-pawn standalone systems
+	// (bRunStandaloneCameraSystem=true) cannot blend across characters — each
+	// has its own evaluation stack, so switching = camera cut.
+	PlayerCameraManagerClass = AGameplayCamerasPlayerCameraManager::StaticClass();
+}
+
+void AZZZPlayerController::OnPossess(APawn* InPawn)
+{
+	Super::OnPossess(InPawn);
+
+	// Gameplay Cameras MANAGER mode: the camera system is owned by
+	// AGameplayCamerasPlayerCameraManager, NOT by the per-pawn components.
+	// Component auto-activation only builds an evaluation context (it never
+	// sets a view target), and PC::SetViewTarget through the manager would
+	// build a plain "actor-copy" context for pawns without a UCameraComponent
+	// (camera stuck at the pawn's origin — observed). The correct entry point
+	// is the manager's ActivateGameplayCamera: it pushes the component's
+	// evaluation context onto the system's context stack (the view target
+	// follows via OnContextStackChanged), which is exactly what lets
+	// CA_PlayerCameras' EnterTransitions blend across squad members.
+	//
+	// Idempotency: only push while the context is NOT active. Once pushed, the
+	// context stays on the stack for the whole session; switching back to a
+	// member is handled by bAutoManageActiveCameraTarget → SetViewTarget, which
+	// finds the existing context and moves it to the top of the stack (silent).
+	// Re-pushing an active context makes ActivateGameplayCamera log an error.
+	if (AZZZCharacter* ZZZPawn = Cast<AZZZCharacter>(InPawn))
+	{
+		if (UGameplayCameraComponent* CameraComp =
+				ZZZPawn->FindComponentByClass<UGameplayCameraComponent>())
+		{
+			TSharedPtr<const UE::Cameras::FCameraEvaluationContext> Context =
+				CameraComp->GetEvaluationContext();
+			const bool bAlreadyPushed = Context.IsValid() && Context->IsActive();
+
+			if (!bAlreadyPushed)
+			{
+				if (AGameplayCamerasPlayerCameraManager* GPCameraManager =
+						Cast<AGameplayCamerasPlayerCameraManager>(PlayerCameraManager))
+				{
+					GPCameraManager->ActivateGameplayCamera(
+						CameraComp, EGameplayCameraComponentActivationMode::Push);
+				}
+				else
+				{
+					UE_LOG(LogZZZCombatRemake, Error,
+						TEXT("OnPossess: PlayerCameraManager is not a GameplayCameras manager "
+						     "(class '%s') — GameplayCameraComponent will not run."),
+						*GetNameSafe(PlayerCameraManager ? PlayerCameraManager->GetClass() : nullptr));
+				}
+			}
+		}
+	}
+}
 
 void AZZZPlayerController::BeginPlay()
 {
@@ -165,10 +226,14 @@ void AZZZPlayerController::SwitchToNextCharacter()
 	// The incoming member inherits the outgoing one's orientation so the
 	// camera (which follows ControlRotation, not the actor) and the switch-in
 	// read as one continuous character. bOrientRotationToMovement re-takes
-	// facing on move. SwitchInOffset 让新人物沿旧人物 forward 反向让位（避免同点
-	// 重叠；0 = 与旧人物同点，保持原行为）。
+	// facing on move.
+	// 入场起点 = 旧人物右后方 (2026-09-01)：后退 SwitchInOffset（≈入场动画前冲位移，
+	// 动画冲完恰好到位）+ 右偏 SwitchInRightOffset（与旧人物错开站位）。新人物朝向
+	// 继承旧人物，前冲动画沿旧人物 facing 方向冲出。
 	const FVector SwitchInLocation = CurrentPawn
-		? CurrentPawn->GetActorLocation() - CurrentPawn->GetActorForwardVector() * SwitchInOffset
+		? CurrentPawn->GetActorLocation()
+			- CurrentPawn->GetActorForwardVector() * SwitchInOffset
+			+ CurrentPawn->GetActorRightVector() * SwitchInRightOffset
 		: GetSpawnLocation();
 	NextMember->SetActorLocationAndRotation(
 		SwitchInLocation,
@@ -215,18 +280,11 @@ void AZZZPlayerController::SwitchToNextCharacter()
 	Possess(NextMember);
 	SetControlRotation(ControlRotationBeforePossess);
 
-	// ── 7. Re-activate the new member's gameplay camera ──
-	// A freshly spawned member auto-activates at BeginPlay, but a member we
-	// switch back to was already activated (and lost the view target when the
-	// last switch took it). Explicit re-activation re-sets the view target to
-	// the new pawn, which drives CA_PlayerCameras' EnterTransitions blend —
-	// the smooth camera transition on switch. Rotation stays player-controlled
-	// (both characters share CR_ThirdPerson, driven by ControlRotation).
-	if (UGameplayCameraComponent* CameraComp =
-			NextMember->FindComponentByClass<UGameplayCameraComponent>())
-	{
-		CameraComp->ActivateCameraForPlayerController(this);
-	}
+	// ── 7. Camera: handled by OnPossess — the camera view target is set
+	// (ActivateCameraForPlayerController) from OnPossess, which Possess()
+	// calls above. EnterTransitions on CA_PlayerCameras then blends the camera
+	// position from the previous character to this one; rotation stays
+	// player-controlled (CR_ThirdPerson is driven by ControlRotation).
 
 	UE_LOG(LogZZZCombatRemake, Log,
 		TEXT("SwitchToNextCharacter: switched to '%s'."), *GetNameSafe(NextClass));

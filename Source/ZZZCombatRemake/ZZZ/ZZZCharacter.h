@@ -138,9 +138,13 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Switch")
 	TArray<FGameplayTag> SwitchWaitAbilityTags;
 
-	/** 退场动画；空 → 跳过动画直接材质淡出。 */
+	/** 退场动画（idle / GA 衔接等非移动状态）；空 → 跳过动画直接材质淡出。 */
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Switch")
 	TObjectPtr<UAnimMontage> ExitMontage;
+
+	/** 跑步状态退场动画（移动中切换时优先于 ExitMontage；空 → 回落 ExitMontage）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Switch")
+	TObjectPtr<UAnimMontage> RunningExitMontage;
 
 	/** 进场动画；空 → 直接显示。 */
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Switch")
@@ -180,7 +184,6 @@ private:
 	void UnbindSwitchOutListeners();
 	void OnWaitAbilityEnded();
 	void OnDeadTagChanged(FGameplayTag Tag, int32 NewCount);
-	void OnExitMontageEnded(UAnimMontage* Montage, bool bInterrupted);
 	void StartMaterialFade();
 	void TickMaterialFade();
 	void FinalizeSwitchOut();
@@ -198,6 +201,9 @@ private:
 
 	bool bSwitchingOut = false;
 	ESwitchOutPhase SwitchOutPhase = ESwitchOutPhase::None;
+
+	/** 本次切换是否等待过攻击 GA 结束 (2026-09-01)：true → 退场用 GA 衔接动画 ExitMontage；false → 跑步退场动画 RunningExitMontage。 */
+	bool bSwitchWaitedForAbility = false;
 
 	/** 材质淡出用的动态材质实例缓存（每槽一个，退场时懒创建，进场时复位）。 */
 	UPROPERTY(Transient)

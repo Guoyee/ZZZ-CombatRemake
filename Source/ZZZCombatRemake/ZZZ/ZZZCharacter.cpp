@@ -43,6 +43,12 @@ AZZZCharacter::AZZZCharacter()
 	// ECC_Pawn(旧 Pawn 扫描全部落空 — 攻击检测已改阵营感知, 见
 	// ZZZAnimNotify_AttackTrace)。Profile 定义在 Config/DefaultEngine.ini。
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("ZZZPlayer"));
+
+	// 镜头穿透玩家 (2026-09-01): 胶囊与 mesh 对 ECC_Camera 显式 Ignore —
+	// CollisionPush 的 Camera trace 只命中世界几何(墙/地板), 不再被玩家本体
+	// 或自身 mesh 遮挡。Profile 未列 Camera 时走通道默认(Block), 故需显式覆盖。
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 }
 
 void AZZZCharacter::BeginPlay()
@@ -352,6 +358,7 @@ void AZZZCharacter::StartSwitchOut()
 
 	bSwitchingOut = true;
 	SwitchOutPhase = ESwitchOutPhase::None;
+	bSwitchWaitedForAbility = false;
 
 	// 退场全程临时无敌 (2026-08-31): 从按下切换键起旧人物还站在场上(等 GA 结束/
 	// 退场动画/淡出, 碰撞全开), 会被敌人攻击打死 — 之前 Jane 就是这么死的。
@@ -387,6 +394,7 @@ void AZZZCharacter::StartSwitchOut()
 		// 等 GA EndAbility（取消/打断路径触发同一委托——"取消也算结束"）。
 		// 5.8 委托重构：AddUObject 需 TObjectPtr，用 AddLambda（句柄由
 		// UnbindSwitchOutListeners 释放，ASC 与角色同生命周期）。
+		bSwitchWaitedForAbility = true;  // 攻击中切换：退场播 GA 衔接动画
 		SwitchOutPhase = ESwitchOutPhase::WaitingAbilityEnd;
 		WaitAbilityEndHandle = ASC->OnAbilityEnded.AddLambda(
 			[this](const FAbilityEndedData&) { OnWaitAbilityEnded(); });
@@ -411,16 +419,24 @@ void AZZZCharacter::TryBeginExitSequence()
 	// 打断残段（无主收刀段）前清残留窗口 tag——该段不受 GA EndAbility 兜底覆盖
 	ClearCombatWindowTags();
 
-	if (ExitMontage && GetMesh() && GetMesh()->GetAnimInstance())
+	// 退场动画按"本次切换是否等待过攻击 GA"选择 (2026-09-01)：
+	// 有攻击 GA（等其结束后退场）→ GA 衔接动画 ExitMontage；
+	// 无攻击（跑步/idle 直接退场）→ RunningExitMontage。不用速度判定——技能带位移。
+	UAnimMontage* ChosenExitMontage = bSwitchWaitedForAbility ? ExitMontage : RunningExitMontage;
+	if (!ChosenExitMontage)
+	{
+		ChosenExitMontage = bSwitchWaitedForAbility ? RunningExitMontage : ExitMontage;
+	}
+
+	if (ChosenExitMontage && GetMesh() && GetMesh()->GetAnimInstance())
 	{
 		SwitchOutPhase = ESwitchOutPhase::ExitMontage;
 		UAnimInstance* AnimInstance = GetMesh()->GetAnimInstance();
-		AnimInstance->Montage_Play(ExitMontage, 1.0f);
-		// 5.8: Montage_SetEndDelegate 参数是非 const 引用——CreateUObject 按值返回
-		// 临时委托，必须先存入左值再传（内部 FQueuedMontageEndedEvent 会拷贝持有）。
-		FOnMontageEnded MontageEndDelegate =
-			FOnMontageEnded::CreateUObject(this, &AZZZCharacter::OnExitMontageEnded);
-		AnimInstance->Montage_SetEndDelegate(MontageEndDelegate, ExitMontage);
+		AnimInstance->Montage_Play(ChosenExitMontage, 1.0f);
+		// 2026-09-01: 淡出与退场动画并行——隐藏时刻直接由 FadeDuration 控制
+		//（动画开始 → FadeDuration 秒后隐藏；调 FadeDuration 即调退场节奏，
+		//  与动画时长对齐则动画播完恰好隐藏）。动画结束不再介入隐藏逻辑。
+		StartMaterialFade();
 		return;
 	}
 
@@ -456,12 +472,6 @@ void AZZZCharacter::OnDeadTagChanged(FGameplayTag Tag, int32 NewCount)
 		UnbindSwitchOutListeners();
 		FinalizeSwitchOut();
 	}
-}
-
-void AZZZCharacter::OnExitMontageEnded(UAnimMontage* Montage, bool bInterrupted)
-{
-	// completed / interrupted 统一处理：退场蒙太奇被覆盖或打断也继续淡出
-	StartMaterialFade();
 }
 
 void AZZZCharacter::StartMaterialFade()

@@ -37,6 +37,11 @@ AZZZCombatEnemy::AZZZCombatEnemy()
 	// (PlayerCapsule)与世界, Ignore 其他敌人与 ECC_Pawn(通道理据同
 	// ZZZCharacter)。Profile 定义在 Config/DefaultEngine.ini。
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("ZZZEnemy"));
+
+	// 镜头穿透敌人 (2026-09-01): 同 ZZZCharacter — 胶囊与 mesh 对 ECC_Camera
+	// 显式 Ignore, 敌人挡在镜头与玩家之间时镜头看穿, 只被世界几何遮挡。
+	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 }
 
 UAbilitySystemComponent* AZZZCombatEnemy::GetAbilitySystemComponent() const
@@ -222,10 +227,7 @@ void AZZZCombatEnemy::TryStartAttack(float DeltaSeconds)
 	const float WorldTime = GetWorld()->GetTimeSeconds();
 	if (WorldTime - LastAttackTime < AttackCooldown)
 	{
-		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("[%s] TryStartAttack: cooldown (%.2fs left)"), *GetName(),
-			AttackCooldown - (WorldTime - LastAttackTime));
-		return;
+		return;  // cooldown log removed 2026-08-29 (spammy per-tick)
 	}
 
 	// Nearest alive, visible player within AggroRange.

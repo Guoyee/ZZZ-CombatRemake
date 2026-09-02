@@ -26,6 +26,8 @@ class AZZZPlayerController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	AZZZPlayerController(const FObjectInitializer& ObjectInit);
+
 	void SetBufferedInput(FGameplayTag InputTag)     { BufferedInput = InputTag; }
 	FGameplayTag ConsumeBufferedInput()              { FGameplayTag T = BufferedInput; BufferedInput = FGameplayTag(); return T; }
 	bool HasBufferedInput() const                    { return BufferedInput.IsValid(); }
@@ -62,6 +64,14 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
 
+	/**
+	 * Gameplay Cameras (manager mode): activate the possessed character's
+	 * GameplayCameraComponent here so BOTH the initial possess and every squad
+	 * switch set the view target through one path (component auto-activation
+	 * only builds its evaluation context — it never sets itself as view target).
+	 */
+	virtual void OnPossess(APawn* InPawn) override;
+
 private:
 	UPROPERTY()
 	TObjectPtr<UZZZDamageNumberPool> DamageNumberPool;
@@ -87,9 +97,13 @@ private:
 	/** 切换进行中（旧人物未完全隐藏）——屏蔽再次切换。 */
 	bool bIsSwitching = false;
 
-	/** 进场成员相对旧人物的后退偏移（cm，沿旧人物 forward 反向；0 = 与旧人物同点，保持原行为）。 */
+	/** 进场成员相对旧人物的后退偏移（cm，沿旧人物 forward 反向；≈入场动画前冲位移，动画冲完恰好到位）。 */
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Squad")
-	float SwitchInOffset = 0.0f;
+	float SwitchInOffset = 2000.0f;
+
+	/** 进场成员相对旧人物的右偏偏移（cm，沿旧人物 right 方向；右后方站位，与旧人物错开）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Squad")
+	float SwitchInRightOffset = 250.0f;
 
 	/** 旧人物完全隐藏时回调——清除 bIsSwitching 守卫（AddUniqueDynamic 绑定，见 SwitchToNextCharacter）。 */
 	UFUNCTION()

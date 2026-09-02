@@ -6,6 +6,7 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 
 - `Docs/ZZZ-Combat-System-Design.md` — 唯一权威架构设计，开发前必读
 - `Docs/ZZZ-Combat-Phase3-Plan.md` — 当前实施进度与待办（Phase 3 进行中）
+- `Docs/ZZZ-Camera-Architecture.md` — 相机架构定稿（GameplayCameras manager 模式 + 切人过渡 + 特写预留），开发前必读
 - `Docs/archive/` — 旧版完整文档备份，**勿读**（仅人工查证历史时使用）
 
 ## 构建
@@ -47,7 +48,7 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 4. **GCN 注册表镜像（R20）**：CueManager 扫描只读 FAssetData 的 `GameplayCueName`，引擎派生逻辑会把它擦成 None → unmapped 静默丢弃。GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()`；`IsOverride = true`；cue tag 需 ini 注册（`+Prop=` 逐元素语法）。
 5. **视觉反馈走 GameplayCue**：禁止在 `PostGameplayEffectExecute` 中 SpawnEmitter，走 `ExecuteGameplayCueOnActor`。
 6. **M1 回调区分**：`PostGameplayEffectExecute` 仅对 Instant GE 触发；Duration/Infinite GE 属性变化走 `GetGameplayAttributeValueChangeDelegate()`。
-7. **收刀 = 连段窗口 + 标准打断流程**：单 Montage 双 Section（Attack + Recovery）；连段过渡**先激活下一段再 EndAbility**（防 BlendOut→BlendIn 空窗）；收刀段全程 Root Motion。**收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 `AnimNotify_SendGameplayEvent(EndEventTag)` **决定 GA 结束位置**（GA 提前 EndAbility，`bStopWhenAbilityEnds=false`）→ ② 收刀段**无主播放** + 挂 `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`）**查询 tag → StopAnimMontage → 消费方显式清除 tag**（`RemoveLooseGameplayTag`；无主段 EndAbility 兜底不可达——GA 已结束，见规则 1 A 层双轨②）。**不调用 CancelAbilities**——GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（2026-08-29 定稿）；现 `Move()` 中的 Cancel 为旧方式残留（现有 basic attack 依赖），新技能不依赖。
+7. **收刀 = 连段窗口 + 标准打断流程**：单 Montage 双 Section（Attack + Recovery）；连段过渡**先激活下一段再 EndAbility**（防 BlendOut→BlendIn 空窗）；收刀段全程 Root Motion。**收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 `AnimNotify_SendGameplayEvent(EndEventTag)` **决定 GA 结束位置**（GA 提前 EndAbility，`bStopWhenAbilityEnds=false`；`EndEventTag` 未配置时默认 `Event.Combat.AttackEnd`（2026-08-29，基类惰性解析，GA_Dodge 覆盖为 `DodgeEnd`））→ ② 收刀段**无主播放** + 挂 `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`）**查询 tag → StopAnimMontage → 消费方显式清除 tag**（`RemoveLooseGameplayTag`；无主段 EndAbility 兜底不可达——GA 已结束，见规则 1 A 层双轨②）。**不调用 CancelAbilities**——GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（2026-08-29 定稿）；现 `Move()` 中的 Cancel 为旧方式残留（现有 basic attack 依赖），新技能不依赖。
 8. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接赋 `CustomTimeDilation` 属性）；`FGameplayModifierEvaluatedData` 构造必须 4 参；SetByCaller 用 FGameplayTag 版；UFUNCTION 参数禁止 struct 裸指针（`const FGameplayEventData*` 会 UHT 报错，用 GenericGameplayEventCallbacks + lambda）。
 
 ## MCP 资产操作规则
@@ -59,5 +60,5 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 ## 当前状态
 
 - ✅ Phase 1（GAS 基础设施）/ 1.5（输入→Tag 桥接）/ 2（普攻连段 + 双窗口输入缓冲 + 伤害管线 + 飘字）
-- 🔄 Phase 3（闪避/完美闪避/弹刀/突击/编队切换 + 3.5 时间管理）：Task 3/4 C++ 完成（完美闪避、双减速、震屏、HitStop、受击硬直、FindNearestEnemy）；**冲刺攻击/闪避反击资产待做**；A 层窗口 GE 化已取消（2026-08-29 定稿：窗口 tag 保持 LooseTag，双轨兜底）；Assist（弹刀/突击）C++、PC 切换重构、TeamPanel 待做。细节见 Phase3 计划文档。
+- 🔄 Phase 3（闪避/完美闪避/弹刀/突击/编队切换 + 3.5 时间管理）：Task 3/4 C++ 完成（完美闪避、双减速、震屏、HitStop、受击硬直、FindNearestEnemy）；**冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）**；A 层窗口 GE 化已取消（2026-08-29 定稿：窗口 tag 保持 LooseTag，双轨兜底）；**普通切换已落地（2026-09-02）**——新人物立即进场（`BeginSwitchIn`，右后方入场）+ 旧人物异步退场状态机（`StartSwitchOut`：等攻击 GA EndAbility → `ExitMontage`/`RunningExitMontage`（按是否等待过攻击 GA 选）→ 材质淡出并行（`FadeDuration` 控隐藏）→ 隐藏广播）；`bIsSwitching` 守卫 + 竞态双守卫（`CheckComboTransition`/`WaitCombo` 查 `IsSwitchingOut`）；材质淡出要求 Masked + MI 无 BlendMode=Opaque 覆写；**相机 = GameplayCameras manager 模式定稿（2026-09-02）**——切人镜头平滑过渡（EnterTransitions）+ 角度始终玩家控制，见 `ZZZ-Camera-Architecture.md`；Assist（弹刀/突击）C++、切换自动判定、TeamPanel 待做。细节见架构文档 §4.9.1。
 - ⬜ Phase 4（元素异常）/ 5（终结技/连携技）/ 6（AI/关卡）

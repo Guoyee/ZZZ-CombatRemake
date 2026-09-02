@@ -17,7 +17,7 @@
 | 连携技 Chain Attack | 打空 Daze 后多人连携 | ⬜ Phase 5 |
 | 元素 / 异常 | Fire/Ice/Electric/Physical/Ether + 积蓄爆发 | ⬜ Phase 4 |
 | Daze 失衡 | 攻击积累架势伤害，满后失衡 | ✅ 数值（连携 ⬜ Phase 5） |
-| 三人编队切换 | 持久化成员，隐藏/显示 + Possess | 🔄 原型已验证 |
+| 三人编队切换 | 持久化成员 + 异步退场状态机（等 GA 结束→退场动画→材质淡出→隐藏）| 🔄 普通切换已实现；弹刀/突击自动判定 ⬜ |
 | 敌人 AI | 以骸行为 | ⬜ Phase 6（最小攻击已实现） |
 
 ## 二、核心架构决策
@@ -44,18 +44,23 @@ ACharacter
         └── BP 子类（BP_EnemyTest_Manny…）
 ```
 
-`AZZZCharacter` 职责：移动/相机、ASC 初始化（含阵营 GE `State.Player`）、`DefaultAbilities` 授予（按 class 去重）、输入绑定。切换只做物理切换（隐藏旧+显示新+Possess），不 Cancel 旧能力（脱手技语义）。
+`AZZZCharacter` 职责：移动/相机、ASC 初始化（含阵营 GE `State.Player`）、`DefaultAbilities` 授予（按 class 去重）、输入绑定、**切换进出场状态机**（`BeginSwitchIn` / `StartSwitchOut`，见 §4.9.1）。切换由 PC 编排（`SwitchToNextCharacter`）：新人物立即进场（不等旧人物），旧人物异步退场（等攻击 GA EndAbility → 退场动画 → 材质淡出 → 隐藏），全程不 Cancel 旧能力（脱手技语义）。
 
 ### 3.2 Ability
 
 ```
 UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMontage/PlayMontage + 4 回调；
-                     EndEventTag 提前结束（bStopWhenAbilityEnds=false）；FindNearestEnemy(半径, 状态)）
-├── UZZZBasicAttack      # 连段编排：PlayMontageAndWait + WaitInputBuffer + WaitCombo [+RotateToTarget]
-│                        # 连段过渡：先 TryActivateAbilityByClass(Next) 再 EndAbility(当前)
+                     EndEventTag 提前结束（bStopWhenAbilityEnds=false；未配置默认 Event.Combat.AttackEnd——
+                     2026-08-29 ini 预注册 + 激活时惰性解析，防 CDO 时序坑）；FindNearestEnemy(半径, 状态)；
+                     组合交接 TrySetupComboHandoff（opt-in，2026-08-29：配 NextComboAbility 时由 WaitCombo
+                     驱动，先激活 Next 再 EndAbility，含切换退场守卫 IsSwitchingOut 早退））
+├── UZZZBasicAttack      # 连段编排：PlayMontageAndWait + WaitInputBuffer + 基类组合交接 [+RotateToTarget]
+│                        # （WaitCombo/过渡 2026-08-29 上移基类 opt-in；无条件调用，终端段保留关窗 flush）
 ├── UZZZEnemyAttack      # 敌人攻击：AbilityTags=Ability.Attack.Enemy，ActivationOwnedTags=State.Attacking
 ├── UZZZDodge            # 方向选蒙太奇（前/后），无敌=ActivationOwnedTags=State.Invulnerable，二连闪 CD
 ├── UZZZFollowUpAttack   # 闪避窗口派生攻击（单发模板）：Commit→RotateToTarget→PlayAttackMontage→完成即结束
+│                        # 可选链出（2026-08-29）：配 NextComboAbility（如 GA_DashAttack→GA_BasicAttack_02）
+│                        #   即收刀段 CanCombo 窗口内按攻击直接进下一段；未配 = 单发（不 spawn 组合任务）
 │                        # 门控全在 BP 数据：GA_DashAttack（Trigger=Input.Attack + Required=CanDashAttack
 │                        #   + Blocked=PerfectDodge）/ GA_DodgeCounter（额外 Required=PerfectDodge）
 ├── UZZZAssistDefensive  # 弹刀：入场全程无敌，Cancel 敌人攻击 + 敌人硬直（Phase 3 待做）
@@ -108,16 +113,20 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 
 | 层 | 机制 |
 |---|---|
-| 输入缓冲/连段 | AbilityTask（WaitInputBuffer / WaitCombo） |
+| 输入缓冲/连段 | AbilityTask（WaitInputBuffer / WaitCombo，基类 opt-in 组合交接） |
 | 动画窗口标记 | AnimNotifyState_AbilityWindow（管理 Tag：Begin 添加 / End 移除 / EndAbility 兜底） |
+| 穿敌（胶囊体对通道 Block→Overlap）+ 停止索敌转向 | AnimNotifyState_CollisionPassThrough（per-instance：AffectedChannel 默认 Pawn / PassThroughResponse / WindowTag=State.PassThrough——`UAbilityTask_RotateToTarget` tick 查 tag 跳过转向，根运动驱动面向；伤害走 AttackTrace 球体检测不依赖 Overlap，穿透不影响判定；per-owner 捕获恢复） |
+| 动画驱动旋转（临时关 CMC 自动转向） | AnimNotifyState_RotationOverride（per-owner 捕获/恢复 bOrientRotationToMovement + 可选 bUseControllerRotationYaw——玩家基线 Orient=true 是动画旋转被弹回的元凶） |
 | 碰撞检测 + 打击帧反馈（卡肉/震屏 per-instance 开关） | AnimNotify_AttackTrace（AbilityTask_DoTrace 迁移推迟 Phase 5+） |
+
+⚠ 两新 notify state 与窗口 tag 同族坑：蒙太奇被打断可能跳过 NotifyEnd → 状态残留（穿敌的碰撞/tag 一起残留，状态一致）；窗口保持短促，需硬保证时加能力侧恢复。
 
 ### 4.3 输入缓冲与连段（Phase 2 ✅，手感核心）
 
 - **死区**：蒙太奇伤害帧后由 `AnimNotify_SendGameplayEvent(Event.AnimNotify.BeginInputBuffer)` 开启监听（纯动画侧可调）。
 - **缓冲**：`UAbilityTask_WaitInputBuffer` 在 `Effect.Input.CanBuffer`（InputWindow）内把输入写入 **PC::BufferedInput**（不写 ASC LooseTag，防残留）。
 - **连段窗口**：Recovery 段 `AnimNotifyState_AbilityWindow` 管理 `Effect.Ability.CanCombo`；`UAbilityTask_WaitCombo` 事件驱动（RegisterGameplayTagEvent + GenericGameplayEventCallbacks）检查窗口+缓冲，窗口关闭时清 PC 缓冲。
-- **过渡顺序（关键）**：`CheckComboTransition()` 先 `TryActivateAbilityByClass(NextComboAbility)`，再 `EndAbility(当前)`——新 Montage BlendIn 覆盖收刀，避免空窗帧。
+- **过渡顺序（关键，2026-08-29 上移基类 opt-in）**：基类 `TrySetupComboHandoff()` 创建 WaitCombo → 触发走 `OnComboHandoffTriggered()`（含切换退场守卫 `IsSwitchingOut()` 早退，2026-08-31 自 BasicAttack 迁入）——先 `TryActivateAbilityByClass(NextComboAbility)` 再 `EndAbility(当前)`，新 Montage BlendIn 覆盖收刀，避免空窗帧。BasicAttack 无条件调用（终端段保留关窗 flush 职责）；FollowUpAttack 等攻击族仅配置 `NextComboAbility` 时调用（如 GA_DashAttack → GA_BasicAttack_02，收刀段须另挂 CanCombo 窗口）。
 - **移动打断**：`State.Combat.Recovery` 存在时 `Move()` → `CancelAbilities(Ability.Attack.Basic)` + `StopAnimMontage()`。
 
 ### 4.4 伤害统一 ExecCalc（UZZZDamageExecution）
@@ -145,7 +154,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 
 - 每段攻击 = 一个 Montage（Attack + Recovery 两 Section）+ 一个 GA；连段 = Ability 切换，非 Section 跳转。
 - 收刀 = 合法输入窗口：Recovery 段嵌 AbilityWindow（CanCombo）；Root Motion 全程开启（收刀段不关，防 capsule 与骨骼脱节）；BlendIn 建议 0.05-0.1s。
-- 两段式统一机制（2026-08-08）：基类 `EndEventTag`（GA_Dodge=Event.Combat.DodgeEnd、GA_BasicAttack_N=Event.Combat.AttackEnd）——蒙太奇动作段末尾挂 AnimNotify 发事件 → GA 提前 EndAbility，过渡段无主播放（`bStopWhenAbilityEnds=false`）。连段窗口关闭后 GA 即结束，门控放行下次起手。
+- 两段式统一机制（2026-08-08）：基类 `EndEventTag`（GA_Dodge=Event.Combat.DodgeEnd、GA_BasicAttack_N=Event.Combat.AttackEnd）——蒙太奇动作段末尾挂 AnimNotify 发事件 → GA 提前 EndAbility，过渡段无主播放（`bStopWhenAbilityEnds=false`）。连段窗口关闭后 GA 即结束，门控放行下次起手。**未配置默认 `Event.Combat.AttackEnd`**（2026-08-29）：基类惰性解析（`GetEndEventTag()`，激活/结束时有效）+ `Config/DefaultGameplayTags.ini` 预注册（`+GameplayTagList=`）——CDO 构造早于 native tag 注册，裸 `RequestGameplayTag` 在构造函数会 ensure（规则 2），ini 为唯一 CDO 期可用来源。
 - **收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 notify（`EndEventTag`）决定 GA 结束位置 → ② 收刀段无主播放 + `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`，`ZZZCharacter.cpp:236`）查询 tag → StopAnimMontage + **消费方显式 `RemoveLooseGameplayTag(State.Combat.Recovery)`**（无主段 EndAbility 兜底不可达——GA 已结束；停蒙太奇可能跳过 NotifyEnd，2026-08-29 修复；对应 CLAUDE.md 规则 1 A 层双轨②）。**不调用 CancelAbilities**（2026-08-29 定稿）：GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（与闪避被追击技打断同链）；现 `Move()` 中的 Cancel 为旧方式残留，现有 basic attack 依赖暂保留，新技能不依赖。
 
 ### 4.8 闪避与完美闪避（Phase 3 进行中）
@@ -153,15 +162,35 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - 输入：`Input.Dodge`（`bTriggerOnStarted=true`，Started 语义）。
 - `UZZZDodge`：Commit → Cancel 普攻 → 按 `LastInputVector` 选前/后蒙太奇（方向是输入数据非能力身份）；无敌 = `ActivationOwnedTags=State.Invulnerable`；二连闪 CD（DoubleDodgeWindow 0.7s → DodgeCooldown 0.7s）；程序化位移兜底（`bUseProceduralDisplacement`，DodgeAcceleration=11000 cm/s² + 0.22s ≈ 266cm；Root Motion 动画优先）。闪避全程可攻击（不配 BlockAbilitiesWithTag）。
 - 完美窗口 = 蒙太奇前段 AbilityWindow（`Effect.Ability.CanDodge`）；完美闪避：IncomingDamage 分支拦截（Invulnerable + CanDodge）→ 敌人 GE_SlowMotion + 玩家 GE_PlayerSlowMotion（决策窗口；**不震屏**——慢放本身就是奖励，2026-08-16）。
-- 冲刺攻击/闪避反击（进行中）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，差异全在数据——GA_DashAttack（Trigger=Input.Attack + Required=CanDashAttack + Blocked=PerfectDodge）、GA_DodgeCounter（额外 Required=PerfectDodge）。⚠ 起手守卫（闪避中且 CanDashAttack → 跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：冲刺攻击激活即打断闪避蒙太奇 → 闪避 EndAbility 移除 CanDashAttack 窗口 tag（兜底清理），事后判定会看到死窗口而误放普攻覆盖冲刺攻击（2026-08-11 修复）。
+- 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，差异全在数据——GA_DashAttack（Trigger=Input.Attack + Required=CanDashAttack + Blocked=PerfectDodge）、GA_DodgeCounter（额外 Required=PerfectDodge）。⚠ 起手守卫（闪避中且 CanDashAttack → 跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：冲刺攻击激活即打断闪避蒙太奇 → 闪避 EndAbility 移除 CanDashAttack 窗口 tag（兜底清理），事后判定会看到死窗口而误放普攻覆盖冲刺攻击（2026-08-11 修复）。
 
-### 4.9 弹刀 / 突击 / 编队切换（Phase 3 待做，2026-08-09 设计定稿）
+### 4.9 弹刀 / 突击 / 编队切换（普通切换 ✅ 2026-09-02 落地；弹刀/突击待做）
+
+#### 4.9.1 普通切换（手动切人）——已实现
+
+- **输入**：PC 直绑 `SwitchAction`（`ETriggerEvent::Started` 防连切，非 InputConfig tag 路由）；候选 = `SquadClasses` 轮转、跳过当前职业与阵亡职业（当前存活时）；**`bIsSwitching` 守卫**——旧人物完全隐藏前屏蔽再次切换（未配置/无候选 → 屏幕提示）。
+- **新人物立即进场**（不等旧人物）：`GetOrSpawnSquadMember`（持久成员：首次生成、隐藏不销毁、ASC 继续 Tick）→ 对齐位置+朝向 → **`BeginSwitchIn()`**（复位材质透明度 → 显示+开碰撞 → 播 `EnterMontage`，可空）——新旧两人短暂同场。
+- **入场位置 = 旧人物右后方**（入场动画是前冲演出）：`-旧Forward×SwitchInOffset + 旧Right×SwitchInRightOffset`（PC 资产 `ZZZ|Squad`，默认 2000/250——`SwitchInOffset` ≈ 入场动画前冲位移，动画冲完恰好到位）；朝向继承旧人物，前冲沿旧 facing 方向。
+- **旧人物异步退场状态机 `StartSwitchOut()`**（AZZZCharacter 侧；PC 编排，等 `OnSwitchOutCompleted` 清守卫）：
+  1. 挂切换无敌（`State.Invulnerable`，GE 管理——旧人物退场全程站场可被打死）→ 清窗口 tag（CanCombo/CanBuffer）
+  2. 等待判定：`SwitchWaitAbilityTags`（角色 BP，空 → 运行时默认 `Ability.Attack.Basic`，资产 tag 层级匹配 GA_01..04）任一活动 → 绑 `ASC->OnAbilityEnded` + `State.Dead` tag 安全阀，等其 **EndAbility**（**GA 结束判定，非蒙太奇结束**；取消/打断同样触发）
+  3. 退场动画按 `bSwitchWaitedForAbility`（本次是否等待过攻击 GA）选择：攻击中切换 → **GA 衔接动画 `ExitMontage`**（如 AM_SwitchOut_InAttack）；无攻击（跑步/idle）→ **`RunningExitMontage`**。不用速度判定（技能带位移，速度不可靠）；槽为空回落另一个，全空 → 直接淡出
+  4. **淡出与动画并行**：动画第 1 帧即启动材质淡出，**隐藏时刻由 `FadeDuration` 直接控制**（= 动画开始 → 隐藏总时长；与动画时长对齐则播完恰好隐藏）——动画结束回调不介入隐藏
+  5. 材质淡出 = 逐材质槽 `CreateDynamicMaterialInstance` + 定时器驱动标量参数（默认 `Opacity`）1→0；材质侧：**Blend Mode = Masked + 裁切链路**（OpacityMask ← 参数；要平滑溶解加 `DitherTemporalAA`）。⚠ **MI 的 Material Property Overrides 若覆写 BlendMode=Opaque 会盖掉父级 Masked**（FBX 导入材质自带，换淡出父材质后必须清除——2026-09-01 排障记录）
+  6. 淡出归零 → `FinalizeSwitchOut`：`CancelAllAbilities` 兜底 → 清切换无敌 → 隐藏+关碰撞 → 广播 `OnSwitchOutCompleted` → PC 清守卫
+  7. 死亡（`State.Dead`）任意阶段 → 立即 Finalize（跳过动画/淡出）
+- **竞态双守卫**：旧角色残段蒙太奇期间其 WaitCombo 仍随 ASC tick，而 PC 共享输入缓冲已归新角色——`UZZZBasicAttack::CheckComboTransition` 与 `AbilityTask_WaitCombo::OnComboWindowChanged` 顶部查 `IsSwitchingOut()` 早退：防旧角色连段 + 防关窗 flush 吞新角色攻击缓冲。
+- **相机**：`Possess` 前后保存/恢复 ControlRotation（防镜头被拉向角色朝向、俯仰清零）；view target 由 `OnPossess` 统一设置（GameplayCameras **manager** Push 模式，见 `Docs/ZZZ-Camera-Architecture.md` §三）→ CA_PlayerCameras EnterTransitions 过渡。
+- **配置槽位**：角色 BP `ZZZ|Switch`（`EnterMontage` / `ExitMontage` / `RunningExitMontage` / `FadeParameterName`=Opacity / `FadeDuration` / `SwitchWaitAbilityTags`）；PC 资产 `ZZZ|Squad`（`SquadClasses` / `SwitchInOffset` / `SwitchInRightOffset`）。
+- **降级路径**：无退场动画 → 直接淡出；材质无淡出参数/非 Masked → 淡出无视觉效果但时序照常（FadeDuration 后隐藏）。
+
+#### 4.9.2 弹刀 / 突击（Phase 3 待做，2026-08-09 设计定稿）
 
 - 切换键自动判定（状态优先级语义）：`FindNearestEnemy(300, Effect.Enemy.AttackWindow)` → 弹刀；`FindNearestEnemy(600, State.Staggered)` → 突击；否则普通切换。弹刀窗口与极限闪避共用 `Effect.Enemy.AttackWindow`（黄闪同步段）；攻击已出手/收招段切人 = 普通切换。
 - **弹刀原型取舍**：无精防判定窗口、无资源消耗（可零成本反复触发）——精防与支援点经济推迟 Phase 5。交付"无条件格挡换人 + 敌人硬直惩罚"。
 - `UZZZAssistDefensive`：ActivationOwnedTags=State.Invulnerable（入场全程）→ Cancel 敌人攻击（`Ability.Attack.Enemy`）→ 移除 AttackWindow 兜底 → 敌人挂 `State.Staggered`（UZZZGameplayEffect_Stagger，Duration 0.35s）→ 入场蒙太奇（前段 CanParry + 中后段 AttackTrace 反击）。
 - `UZZZAssistOffensive`：入场前段小无敌（AbilityWindow=State.Invulnerable，非全程）+ RotateToTarget + 命中。
-- **切换时序**：先 Possess 新成员 → 旧成员播 SwitchOut（挂 State.Invulnerable 防受击打断）→ 播完隐藏+关碰撞；Interrupted 分支也走隐藏兜底。`CancelSwitchOut()` 先清标志再 Montage_Stop。能力激活失败（Commit 不过/tag 阻塞）回落普通切换表现。
+- **旧人物下台统一复用 §4.9.1 的退场状态机**（`StartSwitchOut`：等当前 GA 结束 → 退场动画 → 淡出 → 隐藏）；入场方播 Assist **专属**动画（各自 GA 的 `AttackMontage` 槽位），与手动切换的 `EnterMontage` 互不共享（弹刀/连携是独立演出资产，2026-09-02 确认）。能力激活失败（Commit 不过/tag 阻塞）回落普通切换表现。
 - 成员持久化（隐藏/禁碰撞/不销毁），ASC 继续 Tick；切换不 Cancel 旧能力。
 
 ### 4.10 连携技 Director（Phase 5）

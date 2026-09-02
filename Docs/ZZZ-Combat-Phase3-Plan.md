@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 弹刀 / 突击 / 编队切换 + 3.5 时间管理
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**: 实施中 —— Task 3/4 C++ 完成；冲刺攻击/闪避反击资产待做；**A 层窗口 GE 化已取消**（2026-08-29 定稿：窗口 tag 保持 LooseTag，C/B 层状态 GE 已落地）；Assist/切换重构/TeamPanel 待做
+> **状态**: 实施中 —— Task 3/4 C++ 完成；**冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）**；**A 层窗口 GE 化已取消**（2026-08-29 定稿：窗口 tag 保持 LooseTag，C/B 层状态 GE 已落地）；**普通切换已落地（2026-09-02，见架构文档 §4.9.1）**；Assist（弹刀/突击）C++、切换自动判定、TeamPanel 待做
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -19,6 +19,7 @@
 - **Task 3/3.5 收尾 + Task 4**：完美闪避判定前移（按下时窗口查询）、双减速（敌人 0.15 立即 + 玩家 0.5 notify 驱动）、震屏 `GC_ZZZ_CameraShake`（含 R20 三处重写）、TimeDilation 桥接（敌人+玩家）、ApplyHitStop、敌人受击硬直（Staggered）、FindNearestEnemy 助手、`GC_ZZZ_DamageNumber` 补 R20。
 - **Task 5a（2026-08-16 重做为 notify 驱动）**：打击帧打击感——`UZZZAnimNotify_AttackTrace` 新增 per-instance 开关（`bApplyHitStop` + 默认 GE `UZZZGameplayEffect_HitStop`、`bApplyCameraShake` + `CameraShakeCueTag` FGameplayTag 三档 Low/Mid/High 默认 Low，ini 注册；一个 tag 只挂一个处理器，共用单一 `BP_HitShake` 资产）；卡肉 = GE（Duration 0.03s 世界时间 + TimeDilation Override 0.01——LOW 档默认，重击换 BP 子类；到期 aggregator 恢复，无定时器无守卫）；命中保证 = 空挥不进循环 + pre-hit 快照（Invulnerable/Dead，击杀帧保留反馈）；反击激活移除玩家慢放（`UZZZFollowUpAttack` 的 `RemoveActiveEffectsWithGrantedTags(State.SlowMotion)`）。旧 ApplyHitStop 机制全删（两角色）。⚠ 桥接的组件抽取仍推迟至第三个 Actor 类出现。
 - **新 Tag 已注册**：`Effect.Enemy.AttackWindow`、`State.PerfectDodge`、`Effect.Ability.CanDashAttack`、`Event.Combat.DodgeSlowStart`。
+- **2026-09-02 攻击族基础件（构建通过，详见架构文档 §3.2/§4.2/§4.3/§4.7）**：基类组合交接 `TrySetupComboHandoff`（WaitCombo/连段过渡自 BasicAttack 上移，opt-in——BasicAttack 无条件调用保留终端 flush，FollowUpAttack 配 Next 才调用）；`EndEventTag` 未配置默认 `Event.Combat.AttackEnd`（ini 预注册防 CDO ensure）；穿敌 notify `AnimNotifyState_CollisionPassThrough`（`WindowTag=State.PassThrough`，RotateToTarget tick 门控停转向）+ 旋转覆盖 `AnimNotifyState_RotationOverride`；`Move()` 收刀 tag 消费方清理（2026-08-29 已修）。dash→普攻2 链出需资产侧补：GA_DashAttack 配 `NextComboAbility=GA_BasicAttack_02` + 冲刺蒙太奇收刀段挂 CanCombo 窗口。
 
 关键实现定稿（后续工作依赖）：
 - **两段式统一机制**：基类 `EndEventTag`（DodgeEnd / AttackEnd）+ 过渡段无主播放（bStopWhenAbilityEnds=false）。
@@ -43,7 +44,7 @@
 ## 四、后续 Task（依赖顺序）
 
 - **Task #3**：`UZZZAssistDefensive` / `UZZZAssistOffensive` C++。弹刀已按 `Effect.Enemy.AttackWindow` 设计（含敌人 Staggered GE 化后改施加方式）；**取舍显式标注：无精防窗口 + 无资源消耗 → Phase 5**。
-- **Task #4**：PC 切换重构 —— `SwitchToCharacter(Direction)` 参数化 + 自动判定（AttackWindow(300)→弹刀 / Staggered(600)→突击 / 普通）；**先 Possess 新成员** → 旧成员 SwitchOut（挂 State.Invulnerable）→ 播完隐藏+关碰撞；`CancelSwitchOut()` 先清标志再 Montage_Stop；激活失败回落普通切换表现；阵亡成员跳过（IsSquadClassEliminated 已覆盖）。
+- **Task #4**：PC 切换重构 —— ✅ **普通切换部分已落地（2026-09-02）**：新人物立即进场（`BeginSwitchIn`，入场位置 = 旧人物右后方）+ 旧人物异步退场状态机（`StartSwitchOut`：等攻击 GA EndAbility → 退场动画按 `bSwitchWaitedForAbility` 选 `ExitMontage`/`RunningExitMontage` → 材质淡出并行、`FadeDuration` 控制隐藏 → `FinalizeSwitchOut` 广播）；`bIsSwitching` 守卫 + 竞态双守卫（基类 `OnComboHandoffTriggered`〔原 `CheckComboTransition`，2026-09-02 随组合交接上移基类〕/`WaitCombo::OnComboWindowChanged` 查 `IsSwitchingOut`）；相机走 `OnPossess` manager Push（见架构文档 §4.9.1 与 Camera 文档）。**剩余**：`SwitchToCharacter(Direction)` 参数化 + 自动判定（AttackWindow(300)→弹刀 / Staggered(600)→突击 / 普通）；激活失败回落普通切换表现；阵亡成员跳过（IsSquadClassEliminated 已覆盖）。
 - **Task #5**：资产+验证 —— AM_SwitchOut（包装 SwitchOut_Normal_Anim1）、AM_AssistDefensive/Offensive（占位 AM_BasicAttack_01）、GA×2、IA_ZZZSwitchPrev(Q)+IMC+DA、BP_Okuma_Third、PC 配置；验证：弹刀→敌人硬直→再按切换变突击（机制串联）、压力测试（三人快速切换 10+ 次无崩溃/tag 残留/CameraShake 堆叠）。
 - **Task #6**：TeamPanel —— override `OnPossess` → RefreshSquad（替代延迟一帧）；Entry 绑属性变化 delegate（不轮询）+ State.Dead 灰显。
 - **Task #7**：`GC_ZZZ_DamageNumber` 重存（用户操作，R20）。
