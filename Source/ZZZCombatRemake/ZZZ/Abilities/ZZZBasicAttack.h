@@ -7,7 +7,6 @@
 #include "ZZZBasicAttack.generated.h"
 
 class UAbilityTask_WaitInputBuffer;
-class UAbilityTask_WaitCombo;
 class UAbilityTask_RotateToTarget;
 
 /**
@@ -19,13 +18,14 @@ class UAbilityTask_RotateToTarget;
  *   - NextComboAbility:   the follow-up ability class
  *   - AttackMontage:      the montage to play
  *
- * On activation, this ability spawns three AbilityTasks:
- *   1. PlayMontageAndWait    — plays the attack montage
- *   2. WaitInputBuffer       — captures buffered input after dead zone
- *   3. WaitCombo             — checks CanCombo + Buffered each tick
- *
- * When WaitCombo fires → CheckComboTransition() → activates next ability,
- * then ends this one (in that order, to avoid blend gaps).
+ * On activation, this ability spawns:
+ *   1. PlayMontageAndWait — plays the attack montage (base class template)
+ *   2. WaitInputBuffer    — captures buffered input after dead zone
+ *   3. Combo handoff      — WaitCombo + transition via the base class opt-in
+ *      TrySetupComboHandoff() (2026-08-29): a combo-window input activates
+ *      NextComboAbility first, then ends this one (no blend gap). Spawned
+ *      unconditionally — on terminal hits its window-close branch is the
+ *      combo system's stale-buffer flush.
  *
  * This is the central orchestrator of the combo system.
  * All combo timing is driven by montage notifies, not hardcoded floats.
@@ -53,20 +53,10 @@ public:
 		bool bReplicateEndAbility, bool bWasCancelled) override;
 
 protected:
-	// === Combo callbacks ===
-
-	UFUNCTION()
-	void OnComboTriggered();
-
-	void CheckComboTransition();
-
 	// === Managed tasks ===
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitInputBuffer> InputBufferTask;
-
-	UPROPERTY()
-	TObjectPtr<UAbilityTask_WaitCombo> ComboCheckTask;
 
 	// === Targeting ===
 

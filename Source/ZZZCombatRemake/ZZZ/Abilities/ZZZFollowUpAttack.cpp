@@ -4,6 +4,7 @@
 #include "AbilitySystemComponent.h"
 #include "AbilityTask_RotateToTarget.h"
 #include "Tags/ZZZGameplayTags.h"
+#include "ZZZBasicAttack.h"  // complete type: TSubclassOf<UZZZBasicAttack> conversions need StaticClass()
 
 UZZZFollowUpAttack::UZZZFollowUpAttack()
 {
@@ -51,5 +52,15 @@ void UZZZFollowUpAttack::ActivateAbility(
 	if (!PlayAttackMontage())
 	{
 		return;  // PlayAttackMontage already ended the ability (null montage)
+	}
+
+	// Optional combo handoff (2026-08-29): when NextComboAbility is configured
+	// (e.g. GA_DashAttack → GA_BasicAttack_02), an attack input inside the
+	// montage's recovery CanCombo window chains straight into the next hit
+	// (base class TrySetupComboHandoff). Unset = terminal single strike,
+	// exactly as before — no combo tasks are spawned.
+	if (NextComboAbility)
+	{
+		TrySetupComboHandoff();
 	}
 }

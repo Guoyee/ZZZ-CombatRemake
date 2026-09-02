@@ -8,6 +8,7 @@
 
 class UAnimMontage;
 class UAbilityTask_PlayMontageAndWait;
+class UAbilityTask_WaitCombo;
 class UZZZBasicAttack;
 class AZZZCombatEnemy;
 
@@ -54,7 +55,15 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Combo")
 	int32 ComboIndex = 1;
 
-	/** The next combo ability to activate on successful transition. nullptr = terminal hit. */
+	/**
+	 * The next combo ability to activate on a combo-window input (opt-in chain
+	 * handoff — consumed by TrySetupComboHandoff, which subclasses call when
+	 * they want combo chaining; nullptr = terminal hit). Combo transitions
+	 * call TryActivateAbilityByClass(Next) FIRST, then EndAbility(this) — the
+	 * new montage's BlendIn overlaps this ability's recovery (收刀), avoiding
+	 * a gap frame. Type is UZZZBasicAttack so the chain always lands on a
+	 * basic-attack hit (e.g. GA_DashAttack → GA_BasicAttack_02).
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Combo")
 	TSubclassOf<UZZZBasicAttack> NextComboAbility;
 
@@ -70,12 +79,20 @@ public:
 	 * two-section montages — the front section is the action (dodge motion /
 	 * attack hit), the back section a transition (stand-up / 收刀) that plays
 	 * unowned while the character is fully actionable again.
+	 * Default when unset (2026-08-29): Event.Combat.AttackEnd — a two-section
+	 * montage ends its GA at the action-section notify unless a Blueprint
+	 * overrides (GA_Dodge: Event.Combat.DodgeEnd). Resolved lazily via
+	 * GetEndEventTag() — the CDO is built before native tags register
+	 * (CLAUDE.md 规则 2), so the ctor's RequestGameplayTag may be invalid.
 	 * Configure on the Blueprint:
 	 *   GA_Dodge:         Event.Combat.DodgeEnd
 	 *   GA_BasicAttack_N: Event.Combat.AttackEnd
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Animation")
 	FGameplayTag EndEventTag;
+
+	/** EndEventTag, falling back to Event.Combat.AttackEnd when unset. */
+	FGameplayTag GetEndEventTag() const;
 
 	/** Handle for the EndEventTag listener (GenericGameplayEventCallbacks). */
 	FDelegateHandle EndEventHandle;
@@ -121,4 +138,25 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_PlayMontageAndWait> MontageTask;
+
+	// === Optional combo handoff (opt-in chain support) ===
+
+	/**
+	 * Spawns a WaitCombo task on the CanCombo window (2026-08-29, moved up from
+	 * UZZZBasicAttack so any attack-family subclass can opt in with one call).
+	 * A combo-window attack input triggers OnComboHandoffTriggered — the next
+	 * ability activates, then this one ends (transition order matters: Next
+	 * first, BlendIn overlaps the recovery, no gap frame). Spawned even on
+	 * terminal hits (NextComboAbility null) — the task's window-close branch
+	 * is the combo system's stale-buffer flush (WaitCombo.cpp), so callers
+	 * with recovery windows should call this unconditionally (BasicAttack
+	 * does); callers without windows may gate on NextComboAbility.
+	 */
+	void TrySetupComboHandoff();
+
+	UFUNCTION()
+	void OnComboHandoffTriggered();
+
+	UPROPERTY()
+	TObjectPtr<UAbilityTask_WaitCombo> ComboHandoffTask;
 };
