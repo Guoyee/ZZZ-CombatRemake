@@ -75,8 +75,14 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		bool bReplicateEndAbility, bool bWasCancelled) override;
 
-	/** Lead 完成 → 切主体（两段式播放的衔接点）。 */
+	/**
+	 * Lead 完成 → 切主体（两段式播放的衔接点）。带 BlendOut 的蒙太奇自然播完会
+	 * 先 OnBlendOut 再 OnCompleted——两段式必须在两个回调都前进到主体
+	 * （bLeadPending 拦截基类 EndAbility），否则 lead 的 blend-out 会先杀掉能力。
+	 */
 	virtual void OnMontageCompleted() override;
+
+	virtual void OnMontageBlendOut() override;
 
 protected:
 	// === Lead-in tier montages (起手段 = 含打击1: 弱伤害/长前摇; 普通/强化共用) ===
@@ -143,6 +149,12 @@ protected:
 private:
 	/** 解析入口档位 → 要播的起手(可空 = 直连主体)。激活时自扫前驱活动 GA 资产 tag。 */
 	UAnimMontage* ResolveLeadMontage() const;
+
+	/** Lead 完成/自然 blend-out → 启动主体（bLeadPending 归零，单次路径）。 */
+	void AdvanceToBody();
+
+	/** Avatar 骨骼网格当前是否正在播放 Montage（陈旧回调守卫用）。 */
+	bool IsMontagePlayingOnAvatar(UAnimMontage* Montage) const;
 
 	/** 主体选择(普通/强化) + 扣费在激活时一次完成; Lead 结束后据此续播。 */
 	TObjectPtr<UAnimMontage> ChosenBodyMontage;

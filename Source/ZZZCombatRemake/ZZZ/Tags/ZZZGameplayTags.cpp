@@ -92,6 +92,15 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 	GameplayTagsSingleton.Ability_Attack_Special = Manager.AddNativeGameplayTag(
 		FName("Ability.Attack.Special"),
 		FString("Special attack identity — spec location + self-chain guard (GA also carries Ability.Attack.Basic for cancel/wait semantics)"));
+	// 追击族 (2026-09-03): parent + 段身份——镜像 Ability.Attack.Basic(.BasicAttack0X)
+	// 分层; GA_DashAttack / GA_DashCounter 资产 tag 用成员 tag, 供特殊技入口规则表
+	// (DashLeadContextTags) 与未来的族级取消/等待按 tag 精确匹配。
+	GameplayTagsSingleton.Ability_Attack_Dash = Manager.AddNativeGameplayTag(
+		FName("Ability.Attack.Dash"), FString("Dash-family parent tag (dash attack / dodge counter)"));
+	GameplayTagsSingleton.Ability_Attack_Dash_Attack = Manager.AddNativeGameplayTag(
+		FName("Ability.Attack.Dash.Attack"), FString("Dash attack identity (GA_DashAttack asset tag)"));
+	GameplayTagsSingleton.Ability_Attack_Dash_Counter = Manager.AddNativeGameplayTag(
+		FName("Ability.Attack.Dash.Counter"), FString("Dodge counter identity (GA_DashCounter asset tag)"));
 
 	// === Effect ===
 	GameplayTagsSingleton.Effect_Ability_CanCombo = Manager.AddNativeGameplayTag(

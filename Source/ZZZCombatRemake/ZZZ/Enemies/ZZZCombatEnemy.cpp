@@ -218,8 +218,8 @@ void AZZZCombatEnemy::TryStartAttack(float DeltaSeconds)
 				Hit.AddTag(T);
 			}
 		}
-		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("[%s] TryStartAttack blocked by tags: %s"), *GetName(), *Hit.ToStringSimple());
+		//UE_LOG(LogZZZCombatRemake, Log,
+		//	TEXT("[%s] TryStartAttack blocked by tags: %s"), *GetName(), *Hit.ToStringSimple());
 		return;
 	}
 
@@ -252,12 +252,12 @@ void AZZZCombatEnemy::TryStartAttack(float DeltaSeconds)
 	// In range to swing? Otherwise chase the player while inside aggro range.
 	if (!Target || BestDistSq > AttackRange * AttackRange)
 	{
-		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("[%s] TryStartAttack: %s (dist=%.0fcm, attackRange=%.0fcm)"),
-			*GetName(),
-			Target ? TEXT("chasing") : TEXT("no target"),
-			Target ? FMath::Sqrt(BestDistSq) : 0.0f,
-			AttackRange);
+		// UE_LOG(LogZZZCombatRemake, Log,
+		// 	TEXT("[%s] TryStartAttack: %s (dist=%.0fcm, attackRange=%.0fcm)"),
+		// 	*GetName(),
+		// 	Target ? TEXT("chasing") : TEXT("no target"),
+		// 	Target ? FMath::Sqrt(BestDistSq) : 0.0f,
+		// 	AttackRange);
 		if (Target)
 		{
 			// Chase: face the move direction (smooth yaw — the attack branch

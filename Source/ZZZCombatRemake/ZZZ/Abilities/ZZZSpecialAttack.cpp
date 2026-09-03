@@ -3,8 +3,10 @@
 #include "ZZZSpecialAttack.h"
 #include "AbilitySystemComponent.h"
 #include "AbilityTask_RotateToTarget.h"
+#include "Animation/AnimInstance.h"
 #include "Attributes/ZZZAttributeSet.h"
 #include "Effects/ZZZEnergyGameplayEffects.h"
+#include "GameFramework/Character.h"
 #include "Tags/ZZZGameplayTags.h"
 #include "ZZZCombatRemake.h"
 
@@ -151,18 +153,76 @@ void UZZZSpecialAttack::OnMontageCompleted()
 	// 起手完成 → 切主体(两段式): 主体播放由基类回调链收尾(完成/打断 → EndAbility)。
 	if (bLeadPending)
 	{
-		bLeadPending = false;
-		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("%s: special lead complete — playing body '%s'"),
-			*GetName(), ChosenBodyMontage ? *ChosenBodyMontage->GetName() : TEXT("<null>"));
-		if (!PlayMontage(ChosenBodyMontage))
-		{
-			return;  // PlayMontage already ended the ability (null montage)
-		}
+		AdvanceToBody();
+		return;
+	}
+
+	// 陈旧回调守卫: lead 自然播完先 OnBlendOut(→已前进到主体) 后 OnCompleted——
+	// 迟到的 lead Completed 若此时主体已在播(引擎可能双回调), 直接 EndAbility 会
+	// 误杀刚启动的主体。主体真的播完时它不在播放中, 正常收尾。
+	if (ChosenBodyMontage && IsMontagePlayingOnAvatar(ChosenBodyMontage))
+	{
+		UE_LOG(LogZZZCombatRemake, Verbose,
+			TEXT("%s: stale lead completion ignored — body '%s' already playing"),
+			*GetName(), *ChosenBodyMontage->GetName());
 		return;
 	}
 
 	Super::OnMontageCompleted();
+}
+
+void UZZZSpecialAttack::OnMontageBlendOut()
+{
+	// 带 BlendOut(如 0.25s)的蒙太奇自然播完: 引擎先发 OnBlendOut 再 OnCompleted。
+	// 单段技能两者都 EndAbility 无所谓; 两段式里 lead 的 blend-out 必须视为
+	// "起手结束"前进到主体——否则基类会在此把能力结束, 主体永远不播。
+	// (2026-09-03 修复: lead 播完无 body 跟进, 见 AM_..._Start_01 blendOut=0.25)
+	if (bLeadPending)
+	{
+		AdvanceToBody();
+		return;
+	}
+
+	// 陈旧配对守卫: 若 Completed 先到(已前进)、旧 lead 的 BlendOut 迟到——主体
+	// 正在播, 忽略; 主体真实结束时的 BlendOut 也会被吞, 但紧随的 Completed 收尾。
+	if (ChosenBodyMontage && IsMontagePlayingOnAvatar(ChosenBodyMontage))
+	{
+		UE_LOG(LogZZZCombatRemake, Verbose,
+			TEXT("%s: stale lead blend-out ignored — body '%s' already playing"),
+			*GetName(), *ChosenBodyMontage->GetName());
+		return;
+	}
+
+	Super::OnMontageBlendOut();
+}
+
+void UZZZSpecialAttack::AdvanceToBody()
+{
+	bLeadPending = false;
+
+	UE_LOG(LogZZZCombatRemake, Log,
+		TEXT("%s: special lead complete — playing body '%s'"),
+		*GetName(), ChosenBodyMontage ? *ChosenBodyMontage->GetName() : TEXT("<null>"));
+	if (!PlayMontage(ChosenBodyMontage))
+	{
+		return;  // PlayMontage already ended the ability (null montage)
+	}
+}
+
+bool UZZZSpecialAttack::IsMontagePlayingOnAvatar(UAnimMontage* Montage) const
+{
+	if (!Montage)
+	{
+		return false;
+	}
+	const ACharacter* Character = Cast<ACharacter>(GetAvatarActorFromActorInfo());
+	if (!Character)
+	{
+		return false;
+	}
+	const UAnimInstance* AnimInstance = Character->GetMesh()
+		? Character->GetMesh()->GetAnimInstance() : nullptr;
+	return AnimInstance && AnimInstance->Montage_IsPlaying(Montage);
 }
 
 void UZZZSpecialAttack::EndAbility(

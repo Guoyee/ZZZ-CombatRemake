@@ -23,11 +23,16 @@ class UAbilityTask_RotateToTarget;
  * basic-attack starter while the dodge window is open.
  *
  * Two Blueprint subclasses, referenced by UZZZDodge's follow-up slots
- * (GA_Dodge BP):
- *   DashFollowUpAbility    — plain dodge   → GA_DashAttack  (AM_Attack_Rush)
- *   PerfectFollowUpAbility — perfect dodge → GA_DashCounter (AM_Attack_Counter)
+ * (GA_Dodge BP), each carrying its segment identity asset tag
+ * (2026-09-03 — Ability.Attack.Dash(.Attack/.Counter) hierarchy):
+ *   DashFollowUpAbility    — plain dodge   → GA_DashAttack
+ *                          (AM_Attack_Rush,  Asset Tags ⊇ Ability.Attack.Dash.Attack)
+ *   PerfectFollowUpAbility — perfect dodge → GA_DashCounter
+ *                          (AM_Attack_Counter, Asset Tags ⊇ Ability.Attack.Dash.Counter)
  * The perfect/plain branch is decided at dodge press time (bIsPerfectDodge,
  * 判定前移 philosophy) — State.PerfectDodge no longer participates in routing.
+ * The identity tags feed tag-based rule tables (e.g. UZZZSpecialAttack's
+ * DashLeadContextTags) — keep them in sync with this header.
  *
  * Execution template (shared with neither combo nor dodge):
  *   CommitAbility → optional RotateToTarget → PlayAttackMontage → end on

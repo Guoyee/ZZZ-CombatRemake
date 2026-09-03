@@ -39,7 +39,7 @@
    - `GE_PerfectDodge_Status`；`GE_SlowMotion` Duration ≈ **1.0s**、`GE_PlayerSlowMotion` ≈ **与 CanDashAttack 窗口同步**（手感调；GE 时长走世界时间，角色膨胀不影响——2026-08-15 查证）；`GE_PlayerSlowMotion` 加 **TargetTags 组件 = `State.SlowMotion`**（反击移除定位用，规则 3 GEComponents）
    - `GA_DashAttack`（Trigger=Input.Attack + Required=CanDashAttack + **Blocked=PerfectDodge**）；`GA_DodgeCounter`（额外 Required=PerfectDodge）
    - `AM_Dodge_Fwd/Back`：位移段 AbilityWindow(**CanCombo**——2026-09-03 窗口统一，原 CanDashAttack 废弃；窗口须在 DodgeEnd notify 前结束，追击交接在闪避 GA 存活期内) + 位移末段 SendGameplayEvent(`Event.Combat.DodgeSlowStart`，DodgeEnd notify 之前)
-   - `GA_DashAttack`/`GA_DodgeCounter`：**AbilityTriggers 清空**（2026-09-03 重构为连段段——纯手递手目标，无触发器；Required/Blocked 全部移除）；GA_Dodge 新增追击双槽：`DashFollowUpAbility=GA_DashAttack`、`PerfectFollowUpAbility=GA_DodgeCounter`
+   - `GA_DashAttack`/`GA_DodgeCounter`：**AbilityTriggers 清空**（2026-09-03 重构为连段段——纯手递手目标，无触发器；Required/Blocked 全部移除）；**Asset Tags 补段身份 tag**（2026-09-03 注册 `Ability.Attack.Dash.Attack` / `Ability.Attack.Dash.Counter`，保留原 Ability.Attack.Basic 等既有 tag）；GA_Dodge 新增追击双槽：`DashFollowUpAbility=GA_DashAttack`、`PerfectFollowUpAbility=GA_DodgeCounter`
    - 三角色 DefaultAbilities 追加 GA_DashAttack/GA_DodgeCounter
    - PIE：普通闪避位移段按攻击→冲刺；完美闪避位移段按攻击→反击（慢放中）；窗口外→普攻不变
 

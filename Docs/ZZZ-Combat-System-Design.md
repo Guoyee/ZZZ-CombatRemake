@@ -93,6 +93,7 @@ Input:        Input.Attack / Input.Dodge / Input.Switch.Next / Input.Switch.Prev
               / Input.Special（特殊技 Y，2026-09-03）
 Ability:      Ability.Attack.Basic(.BasicAttack01~04) / Ability.Attack.Enemy
               / Ability.Attack.Special（特殊技身份，2026-09-03）
+              / Ability.Attack.Dash(.Attack/.Counter)（追击族父 tag + 冲刺攻击/闪避反击段身份，2026-09-03）
               Ability.Defense.Dodge(.Perfect) / Ability.Defense.Assist / Ability.Switch.Quick
 State:        State.Alive / Dead / Combat.Recovery / Stun / Staggered / Invulnerable
               / SlowMotion / Enemy / Player / Attacking / PerfectDodge / PassThrough
@@ -242,7 +243,7 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 
 **门控（AZZZCharacter::TryActivateSpecialAttack，Input.Special 分支）**：拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（忙 且 无窗口）。忙 = **类扫描**（活动 spec 是 `UZZZGameplayAbility` 子类），勿 tag 枚举。GA **勿配 AbilityTriggers**。
 
-**两段式播放（单 GA 生命周期）**：激活 = 能量判版本+扣费 → 清 `State.SlowMotion`（FollowUp 模板）→ 转向 → 有起手则 `PlayMontage(Lead)`，Lead 的 OnCompleted（覆写拦截，`bLeadPending` 状态）→ `PlayMontage(Body)`；免起手直连主体。Lead/Body 蒙太奇内**不放窗口 notify、不放 AttackEnd notify**（误放 = GA 提前结束/收尾无主）；蒙太奇完成/打断 → EndAbility；EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`。基类蒙太奇四回调加 `virtual`（2026-09-03，加法）。
+**两段式播放（单 GA 生命周期）**：激活 = 能量判版本+扣费 → 清 `State.SlowMotion`（FollowUp 模板）→ 转向 → 有起手则 `PlayMontage(Lead)`，Lead 的 OnCompleted/**OnBlendOut**（覆写拦截，`bLeadPending` 状态）→ `AdvanceToBody()` → `PlayMontage(Body)`；免起手直连主体。⚠ **带 BlendOut 的蒙太奇自然播完引擎先 OnBlendOut 再 OnCompleted**——两段式必须两个回调都拦截（否则 lead 的 blend-out 先走基类 EndAbility，主体永不播，2026-09-03 修复），并带"主体在播则忽略迟到配对回调"的陈旧守卫。Lead/Body 蒙太奇内**不放窗口 notify、不放 AttackEnd notify**（误放 = GA 提前结束/收尾无主）；蒙太奇完成/打断 → EndAbility；EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`。基类蒙太奇回调加 `virtual`（2026-09-03，加法）。
 
 **资产双 tag 副作用（有意为之）**：GA Asset Tags = {`Ability.Attack.Basic`, `Ability.Attack.Special`} → ① 普攻起手抑制 `!IsActive(Basic)` 自动覆盖 ② 切人默认等待 Basic → 特殊技中切人自动等播完 ③ Dodge `CancelAbilities(Basic)` → 闪避可取消特殊技（特性）。
 

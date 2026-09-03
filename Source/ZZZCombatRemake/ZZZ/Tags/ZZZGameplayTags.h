@@ -32,6 +32,9 @@ public:
 	FGameplayTag Ability_Attack_Basic;
 	FGameplayTag Ability_Attack_Enemy;             // "Ability.Attack.Enemy" (敌人攻击身份，供 CancelAbilities 定位)
 	FGameplayTag Ability_Attack_Special;           // "Ability.Attack.Special" (特殊技身份 — 定位 spec + 自链防护)
+	FGameplayTag Ability_Attack_Dash;              // "Ability.Attack.Dash" (追击族父 tag——冲刺攻击/闪避反击, 2026-09-03)
+	FGameplayTag Ability_Attack_Dash_Attack;       // "Ability.Attack.Dash.Attack" (冲刺攻击段身份 — GA_DashAttack 资产 tag)
+	FGameplayTag Ability_Attack_Dash_Counter;      // "Ability.Attack.Dash.Counter" (闪避反击段身份 — GA_DashCounter 资产 tag)
 	FGameplayTag Ability_Defense_Dodge;            // "Ability.Defense.Dodge"
 	FGameplayTag Ability_Defense_Dodge_Perfect;    // "Ability.Defense.Dodge.Perfect"
 	FGameplayTag Ability_Defense_Assist;           // "Ability.Defense.Assist" (弹刀)
