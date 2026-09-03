@@ -233,7 +233,13 @@ void UZZZGameplayAbility::OnComboHandoffTriggered()
 	}
 
 	UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
-	if (!ASC || !NextComboAbility)
+	if (!ASC)
+	{
+		return;
+	}
+
+	const TSubclassOf<UGameplayAbility> Next = GetComboNext();
+	if (!Next)
 	{
 		// Terminal hit (Next null) or no ASC — stay put and keep playing; the
 		// task's window-close branch has already flushed any stale buffer.
@@ -243,6 +249,11 @@ void UZZZGameplayAbility::OnComboHandoffTriggered()
 	// Transition order (critical): activate the next ability FIRST, then end
 	// this one — the next montage's BlendIn overlaps this ability's recovery
 	// (收刀), avoiding the BlendOut→BlendIn gap frame.
-	ASC->TryActivateAbilityByClass(NextComboAbility);
+	ASC->TryActivateAbilityByClass(Next);
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
+}
+
+TSubclassOf<UGameplayAbility> UZZZGameplayAbility::GetComboNext() const
+{
+	return NextComboAbility;
 }

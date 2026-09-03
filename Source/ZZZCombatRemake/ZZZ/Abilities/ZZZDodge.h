@@ -9,6 +9,7 @@
 
 class UAbilityTask_ApplyRootMotionConstantForce;
 class UGameplayEffect;
+class UZZZFollowUpAttack;
 
 /**
  * Dodge ability — i-frames + displacement.
@@ -119,6 +120,31 @@ protected:
 
 	/** Fires on PlayerSlowEventTag — applies the player slow (perfect dodge only). */
 	void OnPlayerSlowStart();
+
+	// === Follow-up strike handoff (2026-09-03 — 追击技 = 闪避的连段段) ===
+
+	/**
+	 * The dodge's displacement tail carries the generic CanCombo window (same
+	 * AbilityWindow notify as basic-combo segments — CanDashAttack retired).
+	 * An attack input inside that window hands off to the follow-up strike
+	 * through the base-class combo machinery (TrySetupComboHandoff +
+	 * WaitCombo) instead of engine AbilityTriggers — dash attack / dodge
+	 * counter are combo segments, configured per character as ability class
+	 * refs here (GA_Dodge BP):
+	 *   DashFollowUpAbility   — plain dodge   → GA_DashAttack
+	 *   PerfectFollowUpAbility— perfect dodge → GA_DashCounter
+	 * Branch decided at press time (bIsPerfectDodge, 判定前移 philosophy) via
+	 * GetComboNext(); State.PerfectDodge keeps its tag/GE for other systems.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Dodge|FollowUp")
+	TSubclassOf<UZZZFollowUpAttack> DashFollowUpAbility;
+
+	/** 完美闪避的追击段（闪避反击 GA_DashCounter）。空 = 该情形无追击、窗口内攻击走普攻起手。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Dodge|FollowUp")
+	TSubclassOf<UZZZFollowUpAttack> PerfectFollowUpAbility;
+
+	/** 组合交接取下一段：完美闪避 → 反击，普通 → 冲刺攻击。 */
+	virtual TSubclassOf<UGameplayAbility> GetComboNext() const override;
 
 	// === Animation (direction-picked — one ability, two montages) ===
 

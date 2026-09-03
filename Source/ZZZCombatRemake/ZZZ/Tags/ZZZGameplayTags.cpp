@@ -75,9 +75,6 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FString("Player slow-motion start — notify on the dodge montage's displacement tail (animator-placed)"));
 	GameplayTagsSingleton.Event_Combat_AttackEnd = Manager.AddNativeGameplayTag(
 		FName("Event.Combat.AttackEnd"), FString("Attack action section ended — ability may end, montage recovery continues"));
-	GameplayTagsSingleton.Event_Combat_AttackFollowUp = Manager.AddNativeGameplayTag(
-		FName("Event.Combat.AttackFollowUp"),
-		FString("Follow-up request (2026-09-03) — broadcast by the character gate when attack input lands inside a dodge's CanCombo displacement window; GA_DashAttack / GA_DodgeCounter trigger on this tag instead of Input.Attack"));
 
 	// === Ability (parent tag — children registered above) ===
 	GameplayTagsSingleton.Ability_Attack_Basic = Manager.AddNativeGameplayTag(

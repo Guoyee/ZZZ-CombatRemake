@@ -9,6 +9,7 @@
 #include "GameplayEffect.h"
 #include "Tags/ZZZGameplayTags.h"
 #include "ZZZCombatRemake.h"
+#include "ZZZFollowUpAttack.h"  // complete type: TSubclassOf<UZZZFollowUpAttack> conversions
 #include "Engine/World.h"
 
 UZZZDodge::UZZZDodge()
@@ -187,11 +188,27 @@ void UZZZDodge::ActivateAbility(
 		return;  // PlayMontage already ended the ability (null montage)
 	}
 
+	// Follow-up strike handoff (2026-09-03): the dodge's displacement tail
+	// carries the generic CanCombo window (same AbilityWindow notify as basic
+	// segments — CanDashAttack retired); an attack input inside it hands off
+	// to the dash attack / dodge counter through the base-class combo
+	// machinery. Spawned unconditionally (same as UZZZBasicAttack): if the
+	// dodge never reaches the window the task dies with this ability, and the
+	// window-close branch doubles as the stale-buffer flush.
+	TrySetupComboHandoff();
+
 	// Two-section dodge montage: the front section is the dodge motion, the
 	// back section a stand-up → idle transition. EndEventTag (Event.Combat.DodgeEnd,
 	// configured on GA_Dodge) ends the ability early — i-frames drop, all
 	// actions unlock — while the montage keeps playing the transition unowned.
 	// Handled by the base class; nothing to do here.
+}
+
+TSubclassOf<UGameplayAbility> UZZZDodge::GetComboNext() const
+{
+	// 判定前移(2026-08-09)的完美闪避结果在按下时已定——窗口内攻击的追击段据此选择。
+	// 空槽 = 该情形无追击: 组合交接早退, 攻击落到普攻起手(GA_01)。
+	return bIsPerfectDodge ? PerfectFollowUpAbility : DashFollowUpAbility;
 }
 
 void UZZZDodge::EndAbility(

@@ -65,7 +65,6 @@ public:
 	FGameplayTag Event_Combat_DodgeEnd;     // "Event.Combat.DodgeEnd" (前段结束，Notify 广播)
 	FGameplayTag Event_Combat_DodgeSlowStart; // "Event.Combat.DodgeSlowStart" (玩家慢放开始——位移末段 Notify 广播，动画师摆放)
 	FGameplayTag Event_Combat_AttackEnd;    // "Event.Combat.AttackEnd" (攻击主体结束，Notify 广播；区别于 State.Combat.Recovery)
-	FGameplayTag Event_Combat_AttackFollowUp; // "Event.Combat.AttackFollowUp" (追击请求——冲刺攻击/闪避反击触发事件；闪避位移 CanCombo 窗内按攻击时由角色门控广播，GA AbilityTriggers 配此 tag)
 
 	// === Effect ===
 	FGameplayTag Effect_Ability_CanCombo;     // "Effect.Ability.CanCombo" (通用"可输入下一动作"窗口——普攻连段/闪避位移追击/冲刺攻击尾/特殊技入口共用, 2026-09-03 统一)

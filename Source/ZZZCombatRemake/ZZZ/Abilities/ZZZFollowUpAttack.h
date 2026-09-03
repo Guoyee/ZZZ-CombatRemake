@@ -9,38 +9,34 @@
 class UAbilityTask_RotateToTarget;
 
 /**
- * Dodge-window follow-up attacks — the single-strike attacks fired by the
- * attack input while a dodge's displacement window is open. 2026-09-03: the
- * window tag was unified — dodge montages now grant the generic
- * Effect.Ability.CanCombo (AbilityWindow notify, layer A) instead of the
- * retired Effect.Ability.CanDashAttack. Two Blueprint subclasses exist,
- * distinguished ONLY by data:
+ * Dodge-window follow-up strikes — the single-strike attacks fired by the
+ * attack input while a dodge's displacement window is open.
  *
- *   GA_DashAttack   — dash attack  (冲刺攻击):  AM_Attack_Rush
- *                     AbilityTriggers=[Event.Combat.AttackFollowUp]
- *                     ActivationRequiredTags=[Effect.Ability.CanCombo]
- *                     ActivationBlockedTags=[State.PerfectDodge]
- *   GA_DashCounter  — dodge counter (闪避反击):  AM_Attack_Counter
- *                     AbilityTriggers=[Event.Combat.AttackFollowUp]
- *                     ActivationRequiredTags=[Effect.Ability.CanCombo, State.PerfectDodge]
+ * 2026-09-03 (追击技 = 闪避的连段段): these are NOT engine-trigger abilities
+ * anymore — they are combo segments. The dodge arms the base-class combo
+ * handoff (TrySetupComboHandoff): its displacement window grants the generic
+ * Effect.Ability.CanCombo (AbilityWindow notify, layer A — CanDashAttack
+ * retired), an attack input inside the window is consumed by the dodge's own
+ * WaitCombo, and GetComboNext() (overridden by UZZZDodge) activates the
+ * chosen strike. NO AbilityTriggers on these Blueprints (leave the arrays
+ * empty, like basic-combo segments) — the character gate only skips the
+ * basic-attack starter while the dodge window is open.
  *
- * The input routing lives in AZZZCharacter::Input_AbilityInputTagPressed: the
- * character gate, while a dodge is active inside its CanCombo window, converts
- * the attack press into HandleGameplayEvent(Event.Combat.AttackFollowUp) —
- * a DEDICATED event so a plain Input.Attack broadcast can never fire this
- * family from a basic-combo window (which also carries CanCombo). The gate
- * also skips the basic-attack starter in that branch.
+ * Two Blueprint subclasses, referenced by UZZZDodge's follow-up slots
+ * (GA_Dodge BP):
+ *   DashFollowUpAbility    — plain dodge   → GA_DashAttack  (AM_Attack_Rush)
+ *   PerfectFollowUpAbility — perfect dodge → GA_DashCounter (AM_Attack_Counter)
+ * The perfect/plain branch is decided at dodge press time (bIsPerfectDodge,
+ * 判定前移 philosophy) — State.PerfectDodge no longer participates in routing.
  *
  * Execution template (shared with neither combo nor dodge):
  *   CommitAbility → optional RotateToTarget → PlayAttackMontage → end on
- *   montage completion (base class callbacks). No combo chaining, no input
- *   buffering — a follow-up attack is a terminal single strike; damage comes
- *   from ZZZAnimNotify_AttackTrace on the montage.
- *
- * The window is granted by an AnimNotifyState_AbilityWindow on the dodge
- * montage and removed by UZZZDodge::EndAbility as a fallback (CanCombo) — no
- * tag cleanup needed here. A follow-up's own tail may carry its own CanCombo
- * window (chaining into basic 02 / admitting a special attack).
+ *   montage completion (base class callbacks). A follow-up strike is a
+ *   terminal single hit; damage comes from ZZZAnimNotify_AttackTrace on the
+ *   montage. Optional chain out (unchanged): NextComboAbility configured
+ *   (e.g. GA_DashAttack → GA_BasicAttack_02) hands off from its own tail
+ *   CanCombo window. The dodge window is removed by UZZZDodge::EndAbility as
+ *   a fallback (CanCombo) — no tag cleanup needed here.
  */
 UCLASS(Abstract)
 class UZZZFollowUpAttack : public UZZZGameplayAbility

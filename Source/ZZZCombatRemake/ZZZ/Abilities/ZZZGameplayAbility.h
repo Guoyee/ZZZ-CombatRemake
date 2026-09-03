@@ -61,11 +61,24 @@ public:
 	 * they want combo chaining; nullptr = terminal hit). Combo transitions
 	 * call TryActivateAbilityByClass(Next) FIRST, then EndAbility(this) — the
 	 * new montage's BlendIn overlaps this ability's recovery (收刀), avoiding
-	 * a gap frame. Type is UZZZBasicAttack so the chain always lands on a
-	 * basic-attack hit (e.g. GA_DashAttack → GA_BasicAttack_02).
+	 * a gap frame.
+	 *
+	 * Type relaxed 2026-09-03 from TSubclassOf<UZZZBasicAttack> to
+	 * UZZZGameplayAbility: the dodge's follow-up strikes (dash attack / dodge
+	 * counter) are combo segments too — they hand off from the DODGE's
+	 * CanCombo window (see UZZZDodge, which branches the next ability through
+	 * GetComboNext()). Basic-attack chains (GA_01..04) and
+	 * GA_DashAttack → GA_BasicAttack_02 are unchanged.
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Combo")
-	TSubclassOf<UZZZBasicAttack> NextComboAbility;
+	TSubclassOf<UGameplayAbility> NextComboAbility;
+
+	/**
+	 * Which class the combo handoff activates next (2026-09-03). Defaults to
+	 * NextComboAbility; UZZZDodge overrides to pick the follow-up strike by its
+	 * perfect-dodge judgment (plain dodge → dash attack, perfect → counter).
+	 */
+	virtual TSubclassOf<UGameplayAbility> GetComboNext() const;
 
 	// === Animation ===
 

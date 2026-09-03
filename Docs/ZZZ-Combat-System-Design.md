@@ -57,12 +57,14 @@ UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMon
 ├── UZZZBasicAttack      # 连段编排：PlayMontageAndWait + WaitInputBuffer + 基类组合交接 [+RotateToTarget]
 │                        # （WaitCombo/过渡 2026-08-29 上移基类 opt-in；无条件调用，终端段保留关窗 flush）
 ├── UZZZEnemyAttack      # 敌人攻击：AbilityTags=Ability.Attack.Enemy，ActivationOwnedTags=State.Attacking
-├── UZZZDodge            # 方向选蒙太奇（前/后），无敌=ActivationOwnedTags=State.Invulnerable，二连闪 CD
-├── UZZZFollowUpAttack   # 闪避窗口派生攻击（单发模板）：Commit→RotateToTarget→PlayAttackMontage→完成即结束
+├── UZZZDodge            # 方向选蒙太奇（前/后），无敌=ActivationOwnedTags=State.Invulnerable，二连闪 CD；
+│                        #   追击段（2026-09-03）= 组合交接：TrySetupComboHandoff + GetComboNext 覆写
+│                        #   （普通→DashFollowUpAbility / 完美→PerfectFollowUpAbility，GA_Dodge BP 双槽）
+├── UZZZFollowUpAttack   # 追击段单发模板（2026-09-03 起为纯手递手目标，无 AbilityTriggers）：
+│                        #   Commit→RotateToTarget→PlayAttackMontage→完成即结束
 │                        # 可选链出（2026-08-29）：配 NextComboAbility（如 GA_DashAttack→GA_BasicAttack_02）
 │                        #   即收刀段 CanCombo 窗口内按攻击直接进下一段；未配 = 单发（不 spawn 组合任务）
-│                        # 门控全在 BP 数据：GA_DashAttack（Trigger=Input.Attack + Required=CanDashAttack
-│                        #   + Blocked=PerfectDodge）/ GA_DodgeCounter（额外 Required=PerfectDodge）
+│                        # NextComboAbility 类型 2026-09-03 放宽为 UGameplayAbility 族（追击段入链）
 ├── UZZZAssistDefensive  # 弹刀：入场全程无敌，Cancel 敌人攻击 + 敌人硬直（Phase 3 待做）
 ├── UZZZAssistOffensive  # 突击：入场前段小无敌 + 追击命中（Phase 3 待做）
 ├── UZZZSpecialAttack    # 特殊技 ✅ 2026-09-03（详见 §4.13）：可选起手 A/B/C（Lead,
@@ -95,8 +97,7 @@ Ability:      Ability.Attack.Basic(.BasicAttack01~04) / Ability.Attack.Enemy
 State:        State.Alive / Dead / Combat.Recovery / Stun / Staggered / Invulnerable
               / SlowMotion / Enemy / Player / Attacking / PerfectDodge / PassThrough
 Event:        Event.Combat.Hit / Elimination / Stun / DodgePerfect / DodgeEnd / AttackEnd
-              / DodgeSlowStart / Event.Combat.AttackFollowUp（追击请求——闪避位移 CanCombo 窗内
-              按攻击时角色门控广播，冲刺攻击/闪避反击的 AbilityTriggers 触发事件，2026-09-03）
+              / DodgeSlowStart
 Effect:       Effect.Ability.CanCombo（2026-09-03 起为通用"可输入下一动作"窗——普攻连段/
               闪避位移追击/冲刺攻击尾/特殊技入口共用） / Effect.Input.CanBuffer
               / Effect.Enemy.AttackWindow
@@ -175,7 +176,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - 输入：`Input.Dodge`（`bTriggerOnStarted=true`，Started 语义）。
 - `UZZZDodge`：Commit → Cancel 普攻 → 按 `LastInputVector` 选前/后蒙太奇（方向是输入数据非能力身份）；无敌 = `ActivationOwnedTags=State.Invulnerable`；二连闪 CD（DoubleDodgeWindow 0.7s → DodgeCooldown 0.7s）；程序化位移兜底（`bUseProceduralDisplacement`，DodgeAcceleration=11000 cm/s² + 0.22s ≈ 266cm；Root Motion 动画优先）。闪避全程可攻击（不配 BlockAbilitiesWithTag）。
 - 完美窗口 = 蒙太奇前段 AbilityWindow（`Effect.Ability.CanDodge`）；完美闪避：IncomingDamage 分支拦截（Invulnerable + CanDodge）→ 敌人 GE_SlowMotion + 玩家 GE_PlayerSlowMotion（决策窗口；**不震屏**——慢放本身就是奖励，2026-08-16）。
-- 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，差异全在数据——**2026-09-03 窗口统一后**：GA_DashAttack（Trigger=`Event.Combat.AttackFollowUp` + Required=CanCombo + Blocked=PerfectDodge）、GA_DodgeCounter（额外 Required=PerfectDodge）；闪避位移窗 notify 改挂通用 CanCombo。⚠ 起手守卫（闪避中且 CanCombo 窗 → 攻击输入改写为 AttackFollowUp 事件并跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：冲刺攻击激活即打断闪避蒙太奇 → 闪避 EndAbility 移除窗口 tag（兜底清理，现删 CanCombo），事后判定会看到死窗口而误放普攻覆盖冲刺攻击（2026-08-11 修复，语义保留）。
+- 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02；**2026-09-03 重构为连段段**）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，由 `UZZZDodge` 的追击双槽（`DashFollowUpAbility`/`PerfectFollowUpAbility`，GA_Dodge BP 配置）经基类组合交接手递手激活——**无 AbilityTriggers**；闪避位移窗 notify 挂通用 CanCombo（原 CanDashAttack 废弃），追击分支按闪避按下时的完美判定（`GetComboNext()` 覆写）。⚠ 起手守卫（闪避中且 CanCombo 窗 → 广播 Input.Attack 并跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：追击技激活即打断闪避蒙太奇 → 闪避 EndAbility 移除窗口 tag（兜底清理，现删 CanCombo），事后判定会看到死窗口而误放普攻覆盖追击段（2026-08-11 修复，语义保留）。
 
 ### 4.9 弹刀 / 突击 / 编队切换（普通切换 ✅ 2026-09-02 落地；弹刀/突击待做）
 
@@ -237,7 +238,7 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 - **入口解析在 GA 内自扫**：Activation 是同步的，本 GA 激活瞬间前驱 GA 仍活动（其 EndAbility 要等本技蒙太奇打断它）→ 直接读 `Spec.Ability->GetAssetTags()` 查表，**不需要人物身上挂上下文 tag、不需要 EventData 传参**；角色门控只做机制判定。
 - 降级：匹配档的起手槽为空 → 直连主体；无前驱/未匹配 → A（A 空 → 直连）。2/4 段尾帧姿态 = 主体首帧姿态 = 各起手出口姿态（动画师单一收敛契约）。
 
-**窗口统一（2026-09-03）**：`Effect.Ability.CanDashAttack` **废弃**（保留注册防旧资产）——一切攻击族"可输入下一动作"窗口统一为 `Effect.Ability.CanCombo`（普攻连段窗/闪避位移追击窗/冲刺攻击尾窗/收刀段均用 AbilityWindow notify 摆 CanCombo，像连段一样填）。由此冲刺攻击/闪避反击的触发从 `AbilityTriggers=[Input.Attack] + Required=CanDashAttack` 改为 `AbilityTriggers=[Event.Combat.AttackFollowUp] + Required=CanCombo(+PerfectDodge)`——角色门控在"闪避活动 + CanCombo 窗"内把攻击输入改写为该专用事件（普通 Input.Attack 广播绝不触发追击族）。特殊技门控窗口集合随之简化为 `{CanCombo, State.Combat.Recovery}`。
+**窗口统一（2026-09-03 定稿）**：`Effect.Ability.CanDashAttack` **废弃**（保留注册防旧资产）——一切攻击族"可输入下一动作"窗口统一为 `Effect.Ability.CanCombo`（普攻连段窗/闪避位移追击窗/冲刺攻击尾窗/收刀段均用 AbilityWindow notify 摆 CanCombo，像连段一样填）。**追击技（冲刺攻击/闪避反击）= 闪避的连段段**：不配 AbilityTriggers（清空，同普攻段），由 `UZZZDodge` 激活时 `TrySetupComboHandoff()` 武装基类组合交接——其位移窗（CanCombo）内按攻击被闪避自己的 WaitCombo 消费，经 `GetComboNext()`（UZZZDodge 覆写：普通→`DashFollowUpAbility`、完美→`PerfectFollowUpAbility`，GA_Dodge BP 双槽，按下时判定前移分支）激活追击段。`State.PerfectDodge` 不再参与路由（tag/GE 保留，供未来弹刀/UI）。角色门控只保留"闪避活动 + CanCombo 窗 → 广播 Input.Attack 并跳过普攻起手"（2026-08-11 回归修复语义）。特殊技门控窗口集合 = `{CanCombo, State.Combat.Recovery}`。
 
 **门控（AZZZCharacter::TryActivateSpecialAttack，Input.Special 分支）**：拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（忙 且 无窗口）。忙 = **类扫描**（活动 spec 是 `UZZZGameplayAbility` 子类），勿 tag 枚举。GA **勿配 AbilityTriggers**。
 

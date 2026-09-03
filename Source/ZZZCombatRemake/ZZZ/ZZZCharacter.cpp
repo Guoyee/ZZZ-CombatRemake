@@ -294,14 +294,15 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 	FGameplayEventData EventData;
 	EventData.Instigator = this;
 
-	// Dash-attack / dodge-counter routing (2026-09-03, window unified): the
-	// dodge's displacement window now grants the generic CanCombo tag (same
-	// AbilityWindow notify, layer A) — "可以输入下一动作"不再有追击专属 tag。
-	// While a dodge is active inside that window, the attack input is routed
-	// through the dedicated Event.Combat.AttackFollowUp event instead of
-	// Input.Attack — GA_DashAttack / GA_DodgeCounter trigger on THAT tag
-	// (+ Required=CanCombo / PerfectDodge) so a generic Input.Attack broadcast
-	// can never fire them from a basic-combo window.
+	// Follow-up-strike routing (2026-09-03, 追击技 = 闪避的连段段): the dodge's
+	// displacement window grants the generic CanCombo tag (same AbilityWindow
+	// notify as basic segments — CanDashAttack retired). An attack input inside
+	// it belongs to the dodge's OWN combo handoff (UZZZDodge arms
+	// TrySetupComboHandoff; WaitCombo consumes the Input.Attack broadcast below
+	// and activates the dash attack / dodge counter). This gate therefore ONLY
+	// skips the basic-attack starter — no event rewriting, no AbilityTriggers
+	// on the follow-up abilities (they are pure handoff targets, like basic
+	// segments).
 	//
 	// The gate MUST be evaluated BEFORE the generic HandleGameplayEvent
 	// (2026-08-11 regression fix, carried over): activating the dash attack
@@ -315,7 +316,7 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 		&& IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Dodge)
 		&& ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo))
 	{
-		ASC->HandleGameplayEvent(GameplayTags.Event_Combat_AttackFollowUp, &EventData);
+		ASC->HandleGameplayEvent(InputTag, &EventData);
 		return;
 	}
 
