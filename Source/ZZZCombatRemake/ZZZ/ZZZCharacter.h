@@ -40,6 +40,18 @@ public:
 	/** Mirrors the TimeDilation attribute to CustomTimeDilation (same as AZZZCombatEnemy). */
 	void OnTimeDilationChanged(const FOnAttributeChangeData& Data);
 
+	// === Energy (特殊技资源, 2026-09-03) ===
+
+	/** 每命中一名有效敌人固定回能值——被 target 侧 AttributeSet 的伤害确认处读取。 */
+	float GetEnergyGainPerHit() const { return EnergyGainPerHit; }
+
+	/**
+	 * 施加带符号能量增量（走 UZZZGameplayEffect_EnergyDelta, SetByCaller
+	 * Data.Energy——幅值必须先于 Apply 设置）。public：命中回能挂点（敌人侧
+	 * AttributeSet 拿到的 instigator）与自然回能定时器都调它。
+	 */
+	void ApplyEnergyDelta(float Delta);
+
 	// === Switch-in / switch-out (2026-08-31) ===
 
 	/**
@@ -132,6 +144,38 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats")
 	float InitialMaxHealth = 1000.0f;
 
+	// === Energy stats (2026-09-03, 特殊技资源) ===
+
+	/** 能量上限。InitAbilitySystem 应用一次（切换不重置，与 HP 同语义）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats")
+	float MaxEnergy = 100.0f;
+
+	/** 出生能量（默认 0；PIE 调参可临时抬高以直接验证强化特殊技，验证后还原）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats")
+	float InitialEnergy = 0.0f;
+
+	/** 每命中一名有效敌人回能固定值（多目标逐目标累加；击杀帧给、被无敌吸收帧不给）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats")
+	float EnergyGainPerHit = 2.0f;
+
+	/** 自然回能速率（/秒，世界时间——不受 HitStop/慢放拉伸；隐藏中的队员照常回）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats")
+	float EnergyRegenPerSecond = 1.0f;
+
+	/** 自然回能定时器 tick 间隔（秒）——单 tick 增量 = RegenPerSecond × Interval。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats", meta = (ClampMin = "0.05"))
+	float EnergyRegenInterval = 0.2f;
+
+	// === Special-attack entry config (2026-09-03) ===
+
+	/**
+	 * 在这些普攻段位的连段窗口内按 Y 触发特殊技「快速派生」（跳打击 1, 直接从
+	 * QuickStrike section 起手）。空 = 永无快速派生。默认 {2,4}（Koleda 4 段）;
+	 * Jane（5 段）后续按 kit 覆写。
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Combat")
+	TArray<int32> QuickEntryComboIndexes = { 2, 4 };
+
 	// === Switch configuration (2026-08-31, 全部可空降级) ===
 
 	/** 切换退场需等其结束的 GA 资产 tag 列表；空 → 运行时默认 Ability.Attack.Basic（资产 tag 层级匹配 GA_01..04）。 */
@@ -167,6 +211,26 @@ protected:
 private:
 	void InitAbilitySystem();
 	void AddCharacterAbilities();
+
+	// === Energy regen (2026-09-03) ===
+
+	/** 自然回能：InitAbilitySystem 末尾启动的世界 FTimer 循环（隐藏队员照常回）。 */
+	void StartEnergyRegen();
+	void TickEnergyRegen();
+	FTimerHandle EnergyRegenTimerHandle;
+
+	// === Special-attack input gate (2026-09-03) ===
+
+	/**
+	 * Y 键合法性 + 激活（Input.Special 分支）：
+	 *   拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中 /（忙 且 无窗口）。
+	 *   忙 = 类扫描（活动 GA 是 UZZZGameplayAbility 子类）——资产 tag 枚举不可靠
+	 *     （GA_DashAttack 等 tag 是 BP 数据）。
+	 *   窗口 = CanCombo / CanDashAttack / State.Combat.Recovery 任一在身。
+	 *   快速派生 = 忙(普攻段)且窗口在身且活动普攻 ComboIndex ∈ QuickEntryComboIndexes
+	 *     → EventData 带 Event.Combat.SpecialQuickEntry 后 TryActivateAbility。
+	 */
+	void TryActivateSpecialAttack();
 
 	// === Switch-out state machine ===
 

@@ -22,8 +22,9 @@
  *   Primary:  Attack, Defense
  *   Meta:     IncomingDamage (ExecCalc output → PostGEExecute consumption)
  *
- * Deferred to Phase 3+: Energy, MaxEnergy, AnomalyMastery, AnomalyProficiency,
- * AnomalyBuildup. (TimeDilation added in Phase 3 Task 0 — GE bridge in Task 3.)
+ * Phase 3 (2026-09-03): Energy, MaxEnergy added (special-attack resource).
+ * Deferred: AnomalyMastery, AnomalyProficiency, AnomalyBuildup.
+ * (TimeDilation added in Phase 3 Task 0 — GE bridge in Task 3.)
  */
 UCLASS()
 class UZZZAttributeSet : public UAttributeSet
@@ -42,6 +43,24 @@ public:
 	UPROPERTY(BlueprintReadWrite, Category = "Attributes|Vital")
 	FGameplayAttributeData MaxHealth;
 	ATTRIBUTE_ACCESSORS(UZZZAttributeSet, MaxHealth);
+
+	// === Energy (特殊技资源, 2026-09-03) ===
+
+	/**
+	 * Special-attack resource. Gained on hit (per-hit fixed, source-side hook
+	 * in PostGameplayEffectExecute) and by natural regen (character world
+	 * timer). Spent by the enhanced special (Energy >= cost). ALL changes go
+	 * through UZZZGameplayEffect_EnergyDelta (SetByCaller Data.Energy) so the
+	 * value-change delegate stays live for a future energy bar — never
+	 * SetEnergy() directly (bypasses the aggregator).
+	 */
+	UPROPERTY(BlueprintReadWrite, Category = "Attributes|Vital")
+	FGameplayAttributeData Energy;
+	ATTRIBUTE_ACCESSORS(UZZZAttributeSet, Energy);
+
+	UPROPERTY(BlueprintReadWrite, Category = "Attributes|Vital")
+	FGameplayAttributeData MaxEnergy;
+	ATTRIBUTE_ACCESSORS(UZZZAttributeSet, MaxEnergy);
 
 	// === Daze / Stun ===
 
@@ -89,7 +108,7 @@ public:
 
 	// === Attribute Change Callbacks ===
 
-	/** Clamp Health→[0, MaxHealth], Daze→[0, MaxDaze]. */
+	/** Clamp Health→[0, MaxHealth], Daze→[0, MaxDaze], Energy→[0, MaxEnergy]. */
 	virtual void PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue) override;
 
 	/**

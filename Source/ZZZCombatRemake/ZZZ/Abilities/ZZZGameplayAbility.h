@@ -121,8 +121,13 @@ protected:
 	 */
 	bool PlayAttackMontage();
 
-	/** Same as PlayAttackMontage but plays the given montage (e.g. direction-picked dodge). */
-	bool PlayMontage(UAnimMontage* Montage);
+	/**
+	 * Same as PlayAttackMontage but plays the given montage (e.g. direction-picked
+	 * dodge). StartSection (optional, 2026-09-03) is forwarded to
+	 * PlayMontageAndWait — section-branch entries (UZZZSpecialAttack's quick
+	 * strike) start mid-montage; NAME_None = play from the first section.
+	 */
+	bool PlayMontage(UAnimMontage* Montage, FName StartSection = NAME_None);
 
 	UFUNCTION()
 	void OnMontageCompleted();

@@ -10,7 +10,7 @@
 | 系统 | 说明 | 状态 |
 |---|---|---|
 | 基础攻击连段 | 3-5 段普攻，预输入缓冲 | ✅ Phase 2（4 段） |
-| 特殊攻击 EX | 消耗能量强化攻击 | ⬜ Phase 3+ |
+| 特殊攻击 EX | 普通/强化特殊技（Y；能量 ≥ 消耗触发强化版）+ 能量系统 | ✅ 2026-09-03（C++ ✅；资产待做） |
 | 闪避 / 完美闪避 | 极限时机触发时空断裂 | 🔄 Phase 3 |
 | 弹刀 / 突击支援 | 防御/进攻型角色切换 | 🔄 Phase 3 |
 | 终结技 | 消耗全队共享 Decibel | ⬜ Phase 5 |
@@ -65,7 +65,11 @@ UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMon
 │                        #   + Blocked=PerfectDodge）/ GA_DodgeCounter（额外 Required=PerfectDodge）
 ├── UZZZAssistDefensive  # 弹刀：入场全程无敌，Cancel 敌人攻击 + 敌人硬直（Phase 3 待做）
 ├── UZZZAssistOffensive  # 突击：入场前段小无敌 + 追击命中（Phase 3 待做）
-├── UZZZSpecialAttack    # EX 特攻（能量门槛/消耗）——Phase 3+
+├── UZZZSpecialAttack    # 特殊技 ✅ 2026-09-03（详见 §4.13）：普通=AttackMontage /
+│                        #   强化=EnhancedMontage（能量≥EnergyCost 扣费——分支判定在 GA 内）;
+│                        #   快速派生=TriggerEventData 带 SpecialQuickEntry → QuickStrike section;
+│                        #   Asset Tags={Ability.Attack.Basic, Ability.Attack.Special};
+│                        #   蒙太奇全程属 GA（无窗口/无 EndEventTag notify）
 ├── UZZZUltimate         # 终结技（全队 Decibel）——Phase 5
 └── UZZZChainAttack      # 连携技（Director 调度）——Phase 5
 ```
@@ -74,7 +78,7 @@ UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMon
 
 ### 3.3 AttributeSet（UZZZAttributeSet）
 
-Health/MaxHealth、Energy/MaxEnergy、Daze/MaxDaze、Attack/Defense、AnomalyMastery/AnomalyProficiency/AnomalyBuildup、IncomingDamage（Meta，PostGameplayEffectExecute 消费归零）、TimeDilation（桥接 CustomTimeDilation）。访问器由 `ATTRIBUTE_ACCESSORS` 宏生成（`GetHealthAttribute()` 等）。
+Health/MaxHealth、Daze/MaxDaze、Attack/Defense、IncomingDamage（Meta，PostGameplayEffectExecute 消费归零）、TimeDilation（桥接 CustomTimeDilation）。**Energy/MaxEnergy（2026-09-03 落地**，特殊技资源，clamp [0, Max]）。访问器由 `ATTRIBUTE_ACCESSORS` 宏生成（`GetHealthAttribute()` 等）。AnomalyMastery/AnomalyProficiency/AnomalyBuildup 仍推迟。
 
 ### 3.4 GameplayTag 注册表
 
@@ -82,20 +86,24 @@ Health/MaxHealth、Energy/MaxEnergy、Daze/MaxDaze、Attack/Defense、AnomalyMas
 
 ```
 Input:        Input.Attack / Input.Dodge / Input.Switch.Next / Input.Switch.Prev
+              / Input.Special（特殊技 Y，2026-09-03）
 Ability:      Ability.Attack.Basic(.BasicAttack01~04) / Ability.Attack.Enemy
+              / Ability.Attack.Special（特殊技身份，2026-09-03）
               Ability.Defense.Dodge(.Perfect) / Ability.Defense.Assist / Ability.Switch.Quick
 State:        State.Alive / Dead / Combat.Recovery / Stun / Staggered / Invulnerable
               / SlowMotion / Enemy / Player / Attacking / PerfectDodge / PassThrough
 Event:        Event.Combat.Hit / Elimination / Stun / DodgePerfect / DodgeEnd / AttackEnd
-              / Event.Combat.DodgeSlowStart
+              / DodgeSlowStart / Event.Combat.SpecialQuickEntry（特殊技快速派生入口，2026-09-03）
 Effect:       Effect.Ability.CanCombo / Effect.Input.CanBuffer / Effect.Enemy.AttackWindow
               / Effect.Ability.CanDashAttack（CanDodge / CanParry 已废弃：判定前移 + 弹刀共用
               Enemy.AttackWindow，勿用）
-Data:         Data.Damage / Data.Daze
+Data:         Data.Damage / Data.Daze / Data.Energy（2026-09-03——⚠ 另需
+              DefaultGameplayTags.ini 预注册：能量 GE CDO 的 FSetByCallerFloat.DataTag
+              构造期解析，缺失 = 静默 0）
 GameplayCue:  GameplayCue.ZZZ.DamageNumber / CameraShake(.Low/.Mid/.High) / EnemyAttackWarning
 ```
 
-规划中（Phase 4/5）：Input.Special/Ultimate、Ability.Attack.Special/Ultimate、Ability.ChainAttack、Element.*、Anomaly.*、Team.Slot.*、State.SuperArmor/IgnoreInput、Event.Combat.ChainReady。
+规划中（Phase 4/5）：Input.Ultimate、Ability.Attack.Ultimate、Ability.ChainAttack、Element.*、Anomaly.*、Team.Slot.*、State.SuperArmor/IgnoreInput、Event.Combat.ChainReady。
 
 Tag 生命周期规则（2026-08-29 定稿，五层）：**A 动画窗口** → notify 配对 LooseTag + 双轨兜底（有主段 EndAbility / 无主段消费方显式清理）；**B 持久身份** → Infinite GE + 应用时 `DynamicGrantedTags`；**C 核心状态** → GE 管理（禁 LooseTag）；**D 能力生命周期** → `ActivationOwnedTags`；**E 本地路由标志** → Duration GE 自过期。**玩法 tag 除 A 层 notify 配对外禁用 `AddLooseGameplayTag`**；细则见 CLAUDE.md 硬性规则 1。
 
@@ -207,6 +215,26 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 - 注册表镜像坑（R20）：GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()` + `IsOverride=true` + ini 注册（`+Prop=` 语法），否则 CueManager 扫描 unmapped 静默丢弃；资产重存需先标 dirty。
 - 扩展：红闪（不可闪避）/蓝闪（弹刀）同一 GCN 换色或按敌人子类配不同 cue tag。
 
+### 4.13 特殊技 + 能量系统（✅ C++ 2026-09-03；资产待做）
+
+**触发与门控**（Y 键，无 CD，无缓冲）：
+- 可触发 = **各技能可输入窗口**（`Effect.Ability.CanCombo` / `Effect.Ability.CanDashAttack` / `State.Combat.Recovery` 任一在身）**+ 自由态**（无任何玩家战斗 GA 活动）。
+- 拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（**忙 且 无窗口**）——忙用**类扫描**（活动 spec 的 Ability 是 `UZZZGameplayAbility` 子类），勿用 tag 枚举（GA_DashAttack 等资产 tag 是 BP 数据，代码不可证，漏判 = Y 顶掉进行中的技能）。
+- 门控全在 `AZZZCharacter::TryActivateSpecialAttack()`（`Input_AbilityInputTagPressed` 的 Input.Special 分支）；GA **勿配 AbilityTriggers**（否则同帧双激活）。
+
+**普通 vs 强化（单 GA 内运行时分支）**：同一 `UZZZSpecialAttack` BP 子类；`Energy >= EnergyCost`（默认 50，门槛==消耗，逐角色 GA 配）→ 播 `EnhancedMontage` 并扣 EnergyCost（手动 GE Apply——引擎 AbilityCosts 无法携带 per-instance SetByCaller 幅值）；不足 → 播基类 `AttackMontage`，不扣费。能量判定**留在 GA 内**（输入门控不预选版本）。
+
+**快速派生**（段 2/4 衔接）：普攻第 2/4 段（角色 BP `ZZZ|Combat.QuickEntryComboIndexes`，空=禁用）连段窗口内按 Y → 跳过打击 1，从蒙太奇 `QuickStrike` section 起播。入口标签 `Event.Combat.SpecialQuickEntry` 随 Character 的 `InternalTryActivateAbility(Handle, ..., &EventData)` 直传（公开 `TryActivateAbility` 不带事件数据；引擎 `CallActivateAbility` 会把它送进 `ActivateAbility` 覆写）——**不在普攻蒙太奇加 notify**。特殊技动作 = 一次 Y 打完两击（同蒙太奇两伤害 notify）；普通/强化蒙太奇各含 `QuickStrike` section（起点=打击 2 预备帧，对齐普攻段收招姿态），4 情形（普通/强化 × 完整/快速）由 1 类 + 2 资产覆盖。播放走基类 `PlayMontage(Montage, StartSection)`（2026-09-03 基类加可选 StartSection 透传，加法改动）。
+
+**蒙太奇/GA 生命周期（结构 A）**：整条蒙太奇属 GA——无窗口 notify、无 AttackEnd notify（误放会导致 GA 提前结束、收尾变无主段）；蒙太奇播完 = 基类回调 EndAbility；收尾后自由态，攻击从普攻第 1 段重起。EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`（防御误拷 notify 布局）。激活照 `UZZZFollowUpAttack` 模板清 `State.SlowMotion`（完美闪避慢放决策窗结束，防 0.5x 全程）。
+
+**资产双 tag 副作用（有意为之）**：GA Asset Tags = {`Ability.Attack.Basic`, `Ability.Attack.Special`} → ① 普攻起手抑制 `!IsActive(Basic)` 自动覆盖（特殊技中按攻击不顶掉它）② 切人默认等待 tag Basic → 特殊技期间切人自动等播完 ③ Dodge 的 `CancelAbilities(Basic)` → 闪避可取消特殊技（特性，与既有约定一致）。
+
+**能量属性/GE**：`UZZZAttributeSet::Energy/MaxEnergy`（默认 0/100，PreAttributeChange clamp）。**所有能量变化走 `UZZZGameplayEffect_EnergyDelta`**（C++ Instant 载体，Additive modifier on Energy，幅值 SetByCaller `Data.Energy`）——直改 `SetEnergy()` 绕过聚合器，未来能量条绑 ValueChangeDelegate 收不到。⚠ 5.8 引擎修正：`FGameplayEffectModifierMagnitude` 成员已 protected，SetByCaller 幅值只能 ctor 传 `FSetByCallerFloat`；`Data.Energy` 依赖 ini 预注册（CDO 构造期解析，缺失静默 0）。
+- **命中回能**（每次命中固定值，默认 +2，逐角色 `EnergyGainPerHit`）：挂 target 侧 AttributeSet 伤害确认单点（IncomingDamage 分支、Hit 事件后/死亡判定前）——条件 instigator 是 `AZZZCharacter` 且目标带 `State.Enemy`；击杀帧给、被无敌吸收帧不给（吸收已提前 return）。
+- **自然回能**（默认 1/s，`EnergyRegenPerSecond` × 0.2s tick）：角色世界 FTimer 循环（`StartEnergyRegen`，InitAbilitySystem 末尾启动），世界时间不受 HitStop/慢放拉伸；隐藏队员照常回。
+- 能量在切换中保留（每成员独立 AttributeSet，与战损同语义）；`InitialEnergy`（默认 0，PIE 调参可临时抬高）。
+
 ## 五、实施路线图
 
 | Phase | 内容 | 状态 |
@@ -214,7 +242,7 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 | 1 | GAS 基础设施（AttributeSet/基类/ExecCalc/Tags/角色） | ✅ |
 | 1.5 | 输入→Tag 桥接（UZZZInputConfig） | ✅ |
 | 2 | 普攻连段 + 双窗口缓冲 + 伤害管线 + 飘字 | ✅（遗留：AbilityTask_DoTrace 推迟 Phase 5+） |
-| 3 | 闪避/完美闪避/弹刀/突击/编队切换 | 🔄 进行中（见 Phase3 计划） |
+| 3 | 闪避/完美闪避/弹刀/突击/编队切换/特殊技+能量 | 🔄 进行中（特殊技+能量 C++ ✅ 2026-09-03，见 Phase3 计划） |
 | 3.5 | 时间管理（SlowMotion/HitStop/震屏） | 🔄 并入 Phase 3 |
 | 4 | 元素 & 异常 | ⬜ |
 | 5 | 终结技 & 连携技（Director + Decibel + ChainCamera + 相机混合） | ⬜ |
@@ -240,7 +268,8 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 | ZZZ 术语 | 本项目类/概念 |
 |---|---|
 | 普攻 | `UZZZBasicAttack` → `GA_BasicAttack_0X` |
-| 特攻 (EX) | `UZZZSpecialAttack` → `GA_SpecialAttack` |
+| 特殊技 / 强化特殊技 (EX) | `UZZZSpecialAttack` → `GA_SpecialAttack_*`（✅ 2026-09-03，能量分支在 GA 内；强化版能量≥EnergyCost 并扣费） |
+| 能量 | `UZZZAttributeSet::Energy/MaxEnergy` + `UZZZGameplayEffect_EnergyDelta`（SetByCaller Data.Energy） |
 | 终结技 | `UZZZUltimate` → `GA_Ultimate`（消耗 Decibel） |
 | 闪避 / 完美闪避 | `UZZZDodge` + `State.SlowMotion` / `Ability.Defense.Dodge.Perfect` |
 | 弹刀 / 招架 | `UZZZAssistDefensive` → `GA_AssistDefensive` |

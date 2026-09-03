@@ -26,10 +26,12 @@ public:
 	FGameplayTag Input_Switch_Next;  // "Input.Switch.Next"
 	FGameplayTag Input_Dodge;        // "Input.Dodge"
 	FGameplayTag Input_Switch_Prev;  // "Input.Switch.Prev"
+	FGameplayTag Input_Special;      // "Input.Special" (特殊技 Y 键)
 
 	// === Ability ===
 	FGameplayTag Ability_Attack_Basic;
 	FGameplayTag Ability_Attack_Enemy;             // "Ability.Attack.Enemy" (敌人攻击身份，供 CancelAbilities 定位)
+	FGameplayTag Ability_Attack_Special;           // "Ability.Attack.Special" (特殊技身份 — 定位 spec + 自链防护)
 	FGameplayTag Ability_Defense_Dodge;            // "Ability.Defense.Dodge"
 	FGameplayTag Ability_Defense_Dodge_Perfect;    // "Ability.Defense.Dodge.Perfect"
 	FGameplayTag Ability_Defense_Assist;           // "Ability.Defense.Assist" (弹刀)
@@ -63,6 +65,7 @@ public:
 	FGameplayTag Event_Combat_DodgeEnd;     // "Event.Combat.DodgeEnd" (前段结束，Notify 广播)
 	FGameplayTag Event_Combat_DodgeSlowStart; // "Event.Combat.DodgeSlowStart" (玩家慢放开始——位移末段 Notify 广播，动画师摆放)
 	FGameplayTag Event_Combat_AttackEnd;    // "Event.Combat.AttackEnd" (攻击主体结束，Notify 广播；区别于 State.Combat.Recovery)
+	FGameplayTag Event_Combat_SpecialQuickEntry; // "Event.Combat.SpecialQuickEntry" (特殊技快速入口——Character 判定后随 TryActivate EventData 传入，GA 内判 StartSection)
 
 	// === Effect ===
 	FGameplayTag Effect_Ability_CanCombo;     // "Effect.Ability.CanCombo"
@@ -75,6 +78,7 @@ public:
 	// === SetByCaller Data ===
 	FGameplayTag Data_Damage;          // "Data.Damage"
 	FGameplayTag Data_Daze;            // "Data.Daze"
+	FGameplayTag Data_Energy;          // "Data.Energy" (能量增量 SetByCaller —— 需 ini 预注册，能量 GE CDO 构造期解析)
 
 	// === GameplayCue ===
 	FGameplayTag GameplayCue_ZZZ_DamageNumber;       // "GameplayCue.ZZZ.DamageNumber"

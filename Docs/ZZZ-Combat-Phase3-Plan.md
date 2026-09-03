@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 弹刀 / 突击 / 编队切换 + 3.5 时间管理
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**: 实施中 —— Task 3/4 C++ 完成；**冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）**；**A 层窗口 GE 化已取消**（2026-08-29 定稿：窗口 tag 保持 LooseTag，C/B 层状态 GE 已落地）；**普通切换已落地（2026-09-02，见架构文档 §4.9.1）**；Assist（弹刀/突击）C++、切换自动判定、TeamPanel 待做
+> **状态**: 实施中 —— Task 3/4 C++ 完成；**冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）**；**A 层窗口 GE 化已取消**（2026-08-29 定稿：窗口 tag 保持 LooseTag，C/B 层状态 GE 已落地）；**普通切换已落地（2026-09-02，见架构文档 §4.9.1）**；**特殊技（普通/强化 + 快速派生）+ 能量系统 C++ ✅ 2026-09-03**（详见架构文档 §4.13；资产待做）；Assist（弹刀/突击）C++、切换自动判定、TeamPanel 待做
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -20,6 +20,7 @@
 - **Task 5a（2026-08-16 重做为 notify 驱动）**：打击帧打击感——`UZZZAnimNotify_AttackTrace` 新增 per-instance 开关（`bApplyHitStop` + 默认 GE `UZZZGameplayEffect_HitStop`、`bApplyCameraShake` + `CameraShakeCueTag` FGameplayTag 三档 Low/Mid/High 默认 Low，ini 注册；一个 tag 只挂一个处理器，共用单一 `BP_HitShake` 资产）；卡肉 = GE（Duration 0.03s 世界时间 + TimeDilation Override 0.01——LOW 档默认，重击换 BP 子类；到期 aggregator 恢复，无定时器无守卫）；命中保证 = 空挥不进循环 + pre-hit 快照（Invulnerable/Dead，击杀帧保留反馈）；反击激活移除玩家慢放（`UZZZFollowUpAttack` 的 `RemoveActiveEffectsWithGrantedTags(State.SlowMotion)`）。旧 ApplyHitStop 机制全删（两角色）。⚠ 桥接的组件抽取仍推迟至第三个 Actor 类出现。
 - **新 Tag 已注册**：`Effect.Enemy.AttackWindow`、`State.PerfectDodge`、`Effect.Ability.CanDashAttack`、`Event.Combat.DodgeSlowStart`。
 - **2026-09-02 攻击族基础件（构建通过，详见架构文档 §3.2/§4.2/§4.3/§4.7）**：基类组合交接 `TrySetupComboHandoff`（WaitCombo/连段过渡自 BasicAttack 上移，opt-in——BasicAttack 无条件调用保留终端 flush，FollowUpAttack 配 Next 才调用）；`EndEventTag` 未配置默认 `Event.Combat.AttackEnd`（ini 预注册防 CDO ensure）；穿敌 notify `AnimNotifyState_CollisionPassThrough`（`WindowTag=State.PassThrough`，RotateToTarget tick 门控停转向）+ 旋转覆盖 `AnimNotifyState_RotationOverride`；`Move()` 收刀 tag 消费方清理（2026-08-29 已修）。dash→普攻2 链出需资产侧补：GA_DashAttack 配 `NextComboAbility=GA_BasicAttack_02` + 冲刺蒙太奇收刀段挂 CanCombo 窗口。
+- **2026-09-03 特殊技 + 能量系统（构建通过；定稿见架构文档 §4.13）**：`UZZZSpecialAttack`（普通=AttackMontage/强化=EnhancedMontage，能量≥EnergyCost 判定+扣费在 GA 内；快速派生=`Event.Combat.SpecialQuickEntry` EventData → `QuickStrike` section；Asset Tags={Basic, Special}；清慢放 GE；EndAbility 兜底清窗 tag）+ 基类 `PlayMontage(Montage, StartSection)` 透传；`Energy/MaxEnergy` 属性 + `UZZZGameplayEffect_EnergyDelta`（C++ SetByCaller 载体，Data.Energy ini 预注册——5.8 幅值结构修正 FSetByCallerFloat ctor）；命中回能（AttributeSet 伤害确认单点，instigator 玩家 + 目标 State.Enemy）+ 自然回能（世界 FTimer）；Y 门控 `TryActivateSpecialAttack`（窗口+自由态；忙=类扫描）。**资产待做**（步骤见架构文档 §4.13 与 CLAUDE.md 当前状态）。
 
 关键实现定稿（后续工作依赖）：
 - **两段式统一机制**：基类 `EndEventTag`（DodgeEnd / AttackEnd）+ 过渡段无主播放（bStopWhenAbilityEnds=false）。

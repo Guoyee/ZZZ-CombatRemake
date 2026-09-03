@@ -6,6 +6,7 @@
 #include "Engine/World.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "Tags/ZZZGameplayTags.h"
+#include "ZZZCharacter.h"  // 命中回能: instigator → 玩家角色的公开回能入口
 
 namespace
 {
@@ -40,6 +41,8 @@ UZZZAttributeSet::UZZZAttributeSet()
 {
 	InitHealth(100.0f);
 	InitMaxHealth(100.0f);
+	InitEnergy(0.0f);
+	InitMaxEnergy(100.0f);
 	InitDaze(0.0f);
 	InitMaxDaze(200.0f);
 	InitAttack(50.0f);
@@ -55,6 +58,10 @@ void UZZZAttributeSet::PreAttributeChange(const FGameplayAttribute& Attribute, f
 	if (Attribute == GetHealthAttribute())
 	{
 		NewValue = FMath::Clamp(NewValue, 0.0f, GetMaxHealth());
+	}
+	else if (Attribute == GetEnergyAttribute())
+	{
+		NewValue = FMath::Clamp(NewValue, 0.0f, GetMaxEnergy());
 	}
 	else if (Attribute == GetDazeAttribute())
 	{
@@ -132,6 +139,21 @@ void UZZZAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 			HitData.EventMagnitude = DamageAmount;
 			SourceASC->HandleGameplayEvent(
 				FZZZGameplayTags::Get().Event_Combat_Hit, &HitData);
+		}
+
+		// ────────────────────────────────────────────────────────
+		// 命中回能 (2026-09-03): 伤害确认单点——DamageAmount>0 且已穿过无敌拦截,
+		// 击杀帧也在此(死亡判定在下方)。条件: 来源是玩家角色(敌人 instigator 是
+		// AZZZCombatEnemy, Cast 自然短路)且目标是敌人(防未来友伤/中立物误给能)。
+		// 幅值 = 攻击者的 per-hit 配置; 变化走 GAS (源 ASC 上的能量 GE)。
+		// ────────────────────────────────────────────────────────
+		if (TargetASC
+			&& TargetASC->HasMatchingGameplayTag(GameplayTags.State_Enemy))
+		{
+			if (AZZZCharacter* SourceCharacter = Cast<AZZZCharacter>(Context.GetInstigator()))
+			{
+				SourceCharacter->ApplyEnergyDelta(SourceCharacter->GetEnergyGainPerHit());
+			}
 		}
 
 		// Death detection

@@ -156,7 +156,7 @@ bool UZZZGameplayAbility::PlayAttackMontage()
 	return PlayMontage(AttackMontage);
 }
 
-bool UZZZGameplayAbility::PlayMontage(UAnimMontage* Montage)
+bool UZZZGameplayAbility::PlayMontage(UAnimMontage* Montage, FName StartSection)
 {
 	if (!Montage)
 	{
@@ -171,7 +171,7 @@ bool UZZZGameplayAbility::PlayMontage(UAnimMontage* Montage)
 	// recovery (收刀) section, and the dodge's recovery transition plays
 	// unowned after the dodge ability ends. Phase 2 verified; do not change.
 	MontageTask = UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy(
-		this, NAME_None, Montage, 1.0f, NAME_None, false);
+		this, NAME_None, Montage, 1.0f, StartSection, false);
 	MontageTask->OnCompleted.AddDynamic(this, &UZZZGameplayAbility::OnMontageCompleted);
 	MontageTask->OnBlendOut.AddDynamic(this, &UZZZGameplayAbility::OnMontageBlendOut);
 	MontageTask->OnInterrupted.AddDynamic(this, &UZZZGameplayAbility::OnMontageInterrupted);

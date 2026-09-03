@@ -18,6 +18,8 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FName("Input.Dodge"), FString("Dodge input"));
 	GameplayTagsSingleton.Input_Switch_Prev = Manager.AddNativeGameplayTag(
 		FName("Input.Switch.Prev"), FString("Switch to previous squad member"));
+	GameplayTagsSingleton.Input_Special = Manager.AddNativeGameplayTag(
+		FName("Input.Special"), FString("Special attack input (Y key)"));
 
 	// === Combo identity ===
 	GameplayTagsSingleton.Ability_Attack_Basic_BasicAttack01 = Manager.AddNativeGameplayTag(
@@ -73,6 +75,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FString("Player slow-motion start — notify on the dodge montage's displacement tail (animator-placed)"));
 	GameplayTagsSingleton.Event_Combat_AttackEnd = Manager.AddNativeGameplayTag(
 		FName("Event.Combat.AttackEnd"), FString("Attack action section ended — ability may end, montage recovery continues"));
+	GameplayTagsSingleton.Event_Combat_SpecialQuickEntry = Manager.AddNativeGameplayTag(
+		FName("Event.Combat.SpecialQuickEntry"),
+		FString("Special quick-strike entry — rides the TryActivate EventData from the character gate; GA jumps to the QuickStrike section"));
 
 	// === Ability (parent tag — children registered above) ===
 	GameplayTagsSingleton.Ability_Attack_Basic = Manager.AddNativeGameplayTag(
@@ -87,6 +92,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FName("Ability.Defense.Assist"), FString("Defensive assist (parry)"));
 	GameplayTagsSingleton.Ability_Switch_Quick = Manager.AddNativeGameplayTag(
 		FName("Ability.Switch.Quick"), FString("Quick assist (offensive switch)"));
+	GameplayTagsSingleton.Ability_Attack_Special = Manager.AddNativeGameplayTag(
+		FName("Ability.Attack.Special"),
+		FString("Special attack identity — spec location + self-chain guard (GA also carries Ability.Attack.Basic for cancel/wait semantics)"));
 
 	// === Effect ===
 	GameplayTagsSingleton.Effect_Ability_CanCombo = Manager.AddNativeGameplayTag(
@@ -109,6 +117,11 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FName("Data.Damage"), FString("SetByCaller: base damage before defense scaling"));
 	GameplayTagsSingleton.Data_Daze = Manager.AddNativeGameplayTag(
 		FName("Data.Daze"), FString("SetByCaller: absolute daze buildup amount"));
+	GameplayTagsSingleton.Data_Energy = Manager.AddNativeGameplayTag(
+		FName("Data.Energy"), FString("SetByCaller: energy delta (+gain / -cost)"));
+	// NOTE: Data.Energy ALSO lives in DefaultGameplayTags.ini — the energy GE
+	// CDO (UZZZGameplayEffect_EnergyDelta) parses it in its ctor, before native
+	// tags register. Without the ini entry the modifier silently evaluates to 0.
 
 	// === GameplayCue ===
 	// Declared in DefaultGameplayTags.ini (NOT AddNativeGameplayTag) so the tag

@@ -1,10 +1,13 @@
 #include "ZZZCharacter.h"
 
 #include "AbilitySystemComponent.h"
+#include "Abilities/ZZZGameplayAbility.h"
+#include "Abilities/ZZZSpecialAttack.h"
 #include "Animation/AnimInstance.h"
 #include "Attributes/ZZZAttributeSet.h"
 #include "Components/CapsuleComponent.h"
 #include "Effects/ZZZFactionGameplayEffects.h"
+#include "Effects/ZZZEnergyGameplayEffects.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "EnhancedInputComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -75,6 +78,11 @@ void AZZZCharacter::InitAbilitySystem()
 	{
 		AttributeSet->SetMaxHealth(InitialMaxHealth);
 		AttributeSet->SetHealth(InitialMaxHealth);
+
+		// 能量初始化 (2026-09-03): 与 HP 同款 per-BP 配置 + 切换不重置。
+		// Set* 直改不走 PreAttributeChange——上限在此显式 Clamp（BP 覆写越界时防御）。
+		AttributeSet->SetMaxEnergy(MaxEnergy);
+		AttributeSet->SetEnergy(FMath::Clamp(InitialEnergy, 0.0f, MaxEnergy));
 	}
 
 	// Faction mark: State.Player — granted by an Infinite GE (GE-managed tag
@@ -105,6 +113,8 @@ void AZZZCharacter::InitAbilitySystem()
 			this, &AZZZCharacter::OnTimeDilationChanged);
 
 	AddCharacterAbilities();
+
+	StartEnergyRegen();
 }
 
 void AZZZCharacter::OnTimeDilationChanged(const FOnAttributeChangeData& Data)
@@ -146,6 +156,161 @@ bool AZZZCharacter::IsEliminated() const
 }
 
 // ────────────────────────────────────────────────────────────
+// Energy (2026-09-03) — 特殊技资源
+// ────────────────────────────────────────────────────────────
+
+void AZZZCharacter::StartEnergyRegen()
+{
+	if (!ASC || EnergyRegenPerSecond <= 0.0f)
+	{
+		return;
+	}
+
+	// 世界 FTimerManager 循环 — 不受 CustomTimeDilation 拉伸(HitStop/慢放照常回),
+	// 与演员可见性无关(切换退场隐藏后队员照常缓慢回能)。单 tick 增量 = 速率 × 间隔。
+	GetWorldTimerManager().SetTimer(
+		EnergyRegenTimerHandle, this, &AZZZCharacter::TickEnergyRegen,
+		EnergyRegenInterval, /*bLoop=*/true);
+}
+
+void AZZZCharacter::TickEnergyRegen()
+{
+	if (!ASC || IsEliminated())
+	{
+		return;
+	}
+
+	ApplyEnergyDelta(EnergyRegenPerSecond * EnergyRegenInterval);
+}
+
+void AZZZCharacter::ApplyEnergyDelta(float Delta)
+{
+	if (!ASC || FMath::IsNearlyZero(Delta))
+	{
+		return;
+	}
+
+	const float Before = ASC->GetNumericAttribute(UZZZAttributeSet::GetEnergyAttribute());
+
+	// All energy changes funnel through this one Instant GE (SetByCaller
+	// Data.Energy) — direct SetEnergy() would bypass the aggregator and a
+	// future energy bar bound to the value-change delegate would never update
+	// (CLAUDE.md M1 惯例, TimeDilation 桥同款)。幅值必须先于 Apply 设置。
+	FGameplayEffectContextHandle Ctx = ASC->MakeEffectContext();
+	FGameplayEffectSpecHandle Spec =
+		ASC->MakeOutgoingSpec(UZZZGameplayEffect_EnergyDelta::StaticClass(), 1.0f, Ctx);
+	if (!Spec.IsValid())
+	{
+		return;
+	}
+
+	Spec.Data->SetSetByCallerMagnitude(FZZZGameplayTags::Get().Data_Energy, Delta);
+	ASC->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
+
+	UE_LOG(LogZZZCombatRemake, Verbose, TEXT("%s: energy %.1f -> %.1f (%+.1f)"),
+		*GetName(), Before,
+		ASC->GetNumericAttribute(UZZZAttributeSet::GetEnergyAttribute()), Delta);
+}
+
+// ────────────────────────────────────────────────────────────
+// Special-attack input gate (2026-09-03)
+// ────────────────────────────────────────────────────────────
+
+void AZZZCharacter::TryActivateSpecialAttack()
+{
+	if (!ASC)
+	{
+		return;
+	}
+
+	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
+
+	// 切换退场中 / 已阵亡 → 拒绝
+	if (bSwitchingOut || IsEliminated())
+	{
+		return;
+	}
+
+	// 特殊技自身活动中 → 拒绝（防收尾期 Y 自链）。须先于窗口判定——若未来收尾段
+	// 挂了 Recovery 窗口，忙+窗的放行条件会误放第二发。
+	if (IsAbilityActiveWithTag(GameplayTags.Ability_Attack_Special))
+	{
+		return;
+	}
+
+	// 忙 = 任一活动 GA 属于战斗族（类扫描，勿改 tag 枚举——GA_DashAttack 等
+	// 的资产 tag 是 BP 数据, 代码侧不可证, 漏判 = Y 顶掉进行中的技能）。
+	// 顺带记录活动普攻的 ComboIndex（快速入口判定用）。
+	bool bBusy = false;
+	int32 ActiveComboIndex = INDEX_NONE;
+	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (!Spec.Ability || !Spec.IsActive())
+		{
+			continue;
+		}
+		if (Spec.Ability->GetClass()->IsChildOf(UZZZGameplayAbility::StaticClass()))
+		{
+			bBusy = true;
+			if (Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Attack_Basic))
+			{
+				if (const UZZZGameplayAbility* ZZZAbility =
+					Cast<UZZZGameplayAbility>(Spec.Ability))
+				{
+					ActiveComboIndex = ZZZAbility->ComboIndex;
+				}
+			}
+		}
+	}
+
+	// 窗口 = CanCombo / CanDashAttack / State.Combat.Recovery 任一在身。
+	// 自由态（不忙）→ 可触发；忙但有窗口 → 可触发（连段/追击分支）；忙且无窗口
+	// → 静默拒绝（绝不打断进行中的动作, 无任何副作用）。
+	const bool bInWindow =
+		ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo)
+		|| ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanDashAttack)
+		|| ASC->HasMatchingGameplayTag(GameplayTags.State_Combat_Recovery);
+	if (bBusy && !bInWindow)
+	{
+		return;
+	}
+
+	// 快速派生: 活动普攻段位 ∈ QuickEntryComboIndexes（且窗口在身）→ 跳打击 1。
+	const bool bQuickEntry = bBusy && bInWindow
+		&& QuickEntryComboIndexes.Contains(ActiveComboIndex);
+
+	FGameplayEventData EventData;
+	EventData.Instigator = this;
+	if (bQuickEntry)
+	{
+		EventData.EventTag = GameplayTags.Event_Combat_SpecialQuickEntry;
+	}
+
+	// 定位特殊技 spec: 类过滤（UZZZSpecialAttack 子类）+ 资产 tag
+	// Ability.Attack.Special 双保险——按 handle 激活并把 EventData 直传
+	// （GA 内据此选 QuickStrike section）。
+	//
+	// 用 InternalTryActivateAbility 而非公开 TryActivateAbility: 后者不带
+	// TriggerEventData 参数; 内部版会把数据一路送进 ActivateAbility 覆写
+	// (CallActivateAbility, 单机 LocalOnly 无远程分支, 引擎源码核实)。
+	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (Spec.Ability
+			&& Spec.Ability->GetClass()->IsChildOf(UZZZSpecialAttack::StaticClass())
+			&& Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Attack_Special))
+		{
+			ASC->InternalTryActivateAbility(
+				Spec.Handle, FPredictionKey(), nullptr, nullptr, &EventData);
+			return;
+		}
+	}
+
+	UE_LOG(LogZZZCombatRemake, Verbose,
+		TEXT("%s: Input.Special gate passed but no GA_Special granted (DefaultAbilities?)"),
+		*GetName());
+}
+
+// ────────────────────────────────────────────────────────────
 // Tag-based input routing
 // ────────────────────────────────────────────────────────────
 
@@ -182,6 +347,16 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 
 	// Broadcast for Tasks (WaitInputBuffer, etc.)
 	ASC->HandleGameplayEvent(InputTag, &EventData);
+
+	// Special attack (Y) routing (2026-09-03): the full legality gate lives in
+	// TryActivateSpecialAttack (窗口 + 自由态可触发; 忙且无窗口静默拒绝——绝不
+	// 打断进行中的动作). The broadcast above already fed the tag event — this GA
+	// must NOT configure AbilityTriggers or the press would double-fire.
+	if (InputTag == GameplayTags.Input_Special)
+	{
+		TryActivateSpecialAttack();
+		return;
+	}
 
 	// Start GA_01 only for the attack input and only if no basic attack is
 	// already running. During a combo, WaitCombo owns the transition via
