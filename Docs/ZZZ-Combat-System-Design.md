@@ -242,7 +242,9 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 
 **窗口统一（2026-09-03 定稿）**：`Effect.Ability.CanDashAttack` **废弃**（保留注册防旧资产）——一切攻击族"可输入下一动作"窗口统一为 `Effect.Ability.CanCombo`（普攻连段窗/闪避位移追击窗/冲刺攻击尾窗/收刀段均用 AbilityWindow notify 摆 CanCombo，像连段一样填）。**追击技（冲刺攻击/闪避反击）= 闪避的连段段**：不配 AbilityTriggers（清空，同普攻段），由 `UZZZDodge` 激活时 `TrySetupComboHandoff()` 武装基类组合交接——其位移窗（CanCombo）内按攻击被闪避自己的 WaitCombo 消费，经 `GetComboNext()`（UZZZDodge 覆写：普通→`DashFollowUpAbility`、完美→`PerfectFollowUpAbility`，GA_Dodge BP 双槽，按下时判定前移分支）激活追击段。`State.PerfectDodge` 不再参与路由（tag/GE 保留，供未来弹刀/UI）。角色门控只保留"闪避活动 + CanCombo 窗 → 广播 Input.Attack 并跳过普攻起手"（2026-08-11 回归修复语义）。特殊技门控窗口集合 = `{CanCombo, State.Combat.Recovery}`。
 
-**门控（AZZZCharacter::TryActivateSpecialAttack，Input.Special 分支）**：拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（忙 且 无窗口）。忙 = **类扫描**（活动 spec 是 `UZZZGameplayAbility` 子类），勿 tag 枚举。GA **勿配 AbilityTriggers**。
+**门控（AZZZCharacter::TryActivateSpecialAttack，Input.Special 分支）**：拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（忙 且 无窗口 且 无缓冲死区）。忙 = **类扫描**（活动 spec 是 `UZZZGameplayAbility` 子类），勿 tag 枚举。GA **勿配 AbilityTriggers**。
+
+**输入并入缓冲（Y 死区预按，2026-09-03）**：忙且无窗的 Y 若在 `Effect.Input.CanBuffer`（InputWindow notify，与普攻预输入同一死区——摆哪里哪里可预按）内按下 → 写入 `PC::BufferedInput(Input.Special)`（同槽、last-press-wins）而非丢弃，门控返回 true；`UAbilityTask_WaitCombo` 开窗按 buffered tag 分流——`Input.Attack` → 组合交接（连段，原路径），`Input.Special` → 消费后调回角色门控（**等效开窗瞬间再按 Y**：忙+窗放行、前驱 GA 此刻仍活动、入口档位自扫照常——2/4 段免起手直连 / 1/3 段 B / 追击尾 C 与直播 Y 一致），窗被 Y 占用（bHasTriggered，同窗不再接实时连段）；未知 tag → 吞掉清残留、窗保持开放。动作在开窗前被收掉（取消/切人/死亡）→ 残留走既有开窗消费/关窗 flush，与攻击预输入同一生命周期。门控因此有**两个调用点**（按键 + 开窗消费），故声明提为 public。
 
 **两段式播放（单 GA 生命周期）**：激活 = 能量判版本+扣费 → 清 `State.SlowMotion`（FollowUp 模板）→ 转向 → 有起手则 `PlayMontage(Lead)`，Lead 的 OnCompleted/**OnBlendOut**（覆写拦截，`bLeadPending` 状态）→ `AdvanceToBody()` → `PlayMontage(Body)`；免起手直连主体。⚠ **带 BlendOut 的蒙太奇自然播完引擎先 OnBlendOut 再 OnCompleted**——两段式必须两个回调都拦截（否则 lead 的 blend-out 先走基类 EndAbility，主体永不播，2026-09-03 修复），并带"主体在播则忽略迟到配对回调"的陈旧守卫。Lead/Body 蒙太奇内**不放窗口 notify、不放 AttackEnd notify**（误放 = GA 提前结束/收尾无主）；蒙太奇完成/打断 → EndAbility；EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`。基类蒙太奇回调加 `virtual`（2026-09-03，加法）。
 

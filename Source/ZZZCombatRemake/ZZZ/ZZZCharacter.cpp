@@ -16,6 +16,7 @@
 #include "InputActionValue.h"
 #include "ZZZCombatRemake.h"
 #include "ZZZInputConfig.h"
+#include "ZZZPlayerController.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/SpringArmComponent.h"
@@ -216,11 +217,11 @@ void AZZZCharacter::ApplyEnergyDelta(float Delta)
 // Special-attack input gate (2026-09-03)
 // ────────────────────────────────────────────────────────────
 
-void AZZZCharacter::TryActivateSpecialAttack()
+bool AZZZCharacter::TryActivateSpecialAttack()
 {
 	if (!ASC)
 	{
-		return;
+		return false;
 	}
 
 	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
@@ -228,14 +229,14 @@ void AZZZCharacter::TryActivateSpecialAttack()
 	// 切换退场中 / 已阵亡 → 拒绝
 	if (bSwitchingOut || IsEliminated())
 	{
-		return;
+		return false;
 	}
 
 	// 特殊技自身活动中 → 拒绝（防收尾期 Y 自链）。须先于窗口判定——若未来收尾段
 	// 挂了 Recovery 窗口，忙+窗的放行条件会误放第二发。
 	if (IsAbilityActiveWithTag(GameplayTags.Ability_Attack_Special))
 	{
-		return;
+		return false;
 	}
 
 	// 忙 = 任一活动 GA 属于战斗族（类扫描，勿改 tag 枚举——GA_DashAttack 等的
@@ -254,13 +255,31 @@ void AZZZCharacter::TryActivateSpecialAttack()
 	// 窗口 = CanCombo / State.Combat.Recovery 任一在身（2026-09-03 统一后
 	// 追击窗也走 CanCombo——不再有追击专属窗口 tag）。
 	// 自由态（不忙）→ 可触发；忙但有窗口 → 可触发（连段/追击分支）；忙且无窗口
-	// → 静默拒绝（绝不打断进行中的动作, 无任何副作用）。
+	// → 静默拒绝（绝不打断进行中的动作）。
 	const bool bInWindow =
 		ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo)
 		|| ASC->HasMatchingGameplayTag(GameplayTags.State_Combat_Recovery);
 	if (bBusy && !bInWindow)
 	{
-		return;
+		// 缓冲死区预按（2026-09-03）：忙且无窗的 Y 若在 Effect.Input.CanBuffer
+		// （蒙太奇 InputWindow notify，与普攻预输入同一死区——摆哪里哪里可预按）
+		// 内按下 → 写入 PC 共享缓冲而非丢弃，由当前动作的 WaitCombo 在 CanCombo
+		// 开窗时按 buffered tag 分流回本门控（等效开窗瞬间再按 Y——忙+窗放行、
+		// 前驱 GA 此刻仍活动、入口档位自扫照常）。与普攻预输入同槽、last-press-wins。
+		// 动作在开窗前被收掉（取消/切人/死亡）→ 残留走既有开窗消费/关窗 flush。
+		// 死区外的忙（纯动作帧）保持原语义静默拒绝。
+		if (ASC->HasMatchingGameplayTag(GameplayTags.Effect_Input_CanBuffer))
+		{
+			if (AZZZPlayerController* PC = Cast<AZZZPlayerController>(GetInstigatorController()))
+			{
+				PC->SetBufferedInput(GameplayTags.Input_Special);
+				UE_LOG(LogZZZCombatRemake, Verbose,
+					TEXT("%s: Input.Special gated while busy — buffered in dead zone"),
+					*GetName());
+				return true;
+			}
+		}
+		return false;
 	}
 
 	// 入口档位（免起手直连 / 起手 B / 起手 C）由 GA 自己在激活时扫描"前驱活动 GA"
@@ -273,13 +292,14 @@ void AZZZCharacter::TryActivateSpecialAttack()
 			&& Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Attack_Special))
 		{
 			ASC->TryActivateAbility(Spec.Handle, /*bAllowRemoteActivation=*/true);
-			return;
+			return true;
 		}
 	}
 
 	UE_LOG(LogZZZCombatRemake, Verbose,
 		TEXT("%s: Input.Special gate passed but no GA_Special granted (DefaultAbilities?)"),
 		*GetName());
+	return false;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -324,9 +344,11 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 	ASC->HandleGameplayEvent(InputTag, &EventData);
 
 	// Special attack (Y) routing (2026-09-03): the full legality gate lives in
-	// TryActivateSpecialAttack (窗口 + 自由态可触发; 忙且无窗口静默拒绝——绝不
-	// 打断进行中的动作). The broadcast above already fed the tag event — this GA
-	// must NOT configure AbilityTriggers or the press would double-fire.
+	// TryActivateSpecialAttack (窗口/自由态直发; 忙且无窗口时若在缓冲死区
+	// Effect.Input.CanBuffer 内则写入 PC 缓冲、开窗时由 WaitCombo 分流回本
+	// 门控——绝不打断进行中的动作). The broadcast above already fed the tag
+	// event — this GA must NOT configure AbilityTriggers or the press would
+	// double-fire.
 	if (InputTag == GameplayTags.Input_Special)
 	{
 		TryActivateSpecialAttack();

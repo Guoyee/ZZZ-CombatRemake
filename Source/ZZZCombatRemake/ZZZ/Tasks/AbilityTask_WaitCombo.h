@@ -13,7 +13,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FWaitComboDelegate);
  * Event-driven combo trigger. No Tick.
  *
  * CanCombo opens → check PlayerController buffer.
- *   Buffered → combo immediately.
+ *   Buffered == AttackInputTag → combo immediately (handoff to next segment).
+ *   Buffered == Input.Special (2026-09-03, 死区预按的 Y) → NOT a combo chain:
+ *       consume and route back to the character's special gate
+ *       (AZZZCharacter::TryActivateSpecialAttack — behaves like Y pressed at
+ *       window-open; window is spent, no live chaining afterwards).
  *   Not buffered → register Attack listener.
  * CanCombo closes → unregister Attack.
  *

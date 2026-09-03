@@ -3,6 +3,7 @@
 #include "AbilityTask_WaitCombo.h"
 #include "AbilitySystemComponent.h"
 #include "ZZZCharacter.h"
+#include "ZZZGameplayTags.h"
 #include "ZZZPlayerController.h"
 
 UAbilityTask_WaitCombo* UAbilityTask_WaitCombo::WaitCombo(
@@ -100,10 +101,37 @@ void UAbilityTask_WaitCombo::OnComboWindowChanged(FGameplayTag Tag, int32 NewCou
 	AZZZPlayerController* PC = Cast<AZZZPlayerController>(Avatar->GetInstigatorController());
 	if (PC && PC->HasBufferedInput())
 	{
-		bHasTriggered = true;
-		PC->ConsumeBufferedInput();
-		OnComboTriggered.Broadcast();
-		return;
+		const FGameplayTag BufferedTag = PC->ConsumeBufferedInput();
+
+		// Buffered combo input (Input.Attack) — combo handoff (original path).
+		if (BufferedTag == AttackInputTag)
+		{
+			bHasTriggered = true;
+			OnComboTriggered.Broadcast();
+			return;
+		}
+
+		// Buffered special input (2026-09-03): a Y pressed in the dead zone
+		// (Effect.Input.CanBuffer) while busy. This window is NOT a combo-chain
+		// — hand the decision back to the character-layer gate, exactly as if Y
+		// were pressed at window-open: the gate passes (busy + window), the
+		// special's own entry scan reads the still-active predecessor GA
+		// (segment 2/4 → direct body, 1/3 → combo lead, dash tail → dash lead).
+		// The window is spent (bHasTriggered) — no live combo chaining within
+		// it, and a gate rejection (dead/switching/…) consumes the press like a
+		// flush would.
+		if (BufferedTag == FZZZGameplayTags::Get().Input_Special)
+		{
+			bHasTriggered = true;
+			if (AZZZCharacter* Character = Cast<AZZZCharacter>(Avatar))
+			{
+				Character->TryActivateSpecialAttack();
+			}
+			return;
+		}
+
+		// Unknown buffered tag — consumed (no residue), window stays open:
+		// fall through and register the live attack listener below.
 	}
 
 	// No pre-buffered input — register Attack for ongoing window

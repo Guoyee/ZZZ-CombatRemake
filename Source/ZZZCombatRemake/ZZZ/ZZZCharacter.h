@@ -70,6 +70,24 @@ public:
 	/** 旧人物完成隐藏时广播（PC 绑定以清除 bIsSwitching 守卫）。 */
 	FZZZSwitchOutCompletedSignature OnSwitchOutCompleted;
 
+	/**
+	 * 特殊技（Y）入口门控——机制判定 + 激活 + 缓冲，两个调用点（2026-09-03）：
+	 *   ① Input.Special 按下（Input_AbilityInputTagPressed 的 Input.Special 分支）；
+	 *   ② WaitCombo 在 CanCombo 开窗时消费到缓冲的 Input.Special（死区预按，
+	 *      等效开窗瞬间再按一次 Y——此刻前驱 GA 仍活动，档位自扫照常）。
+	 * 拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中 /（忙 且 无窗口 且 无缓冲死区）。
+	 * 忙 = 类扫描（活动 GA 是 UZZZGameplayAbility 子类）——资产 tag 枚举不可靠
+	 *   （GA_DashAttack 等 tag 是 BP 数据）。
+	 * 窗口 = CanCombo / State.Combat.Recovery 任一在身（2026-09-03 统一）。
+	 * 忙且无窗、但按下时处于缓冲死区（Effect.Input.CanBuffer）→ 写入
+	 *   PC::BufferedInput(Input.Special) 并返回 true——由当前动作的 WaitCombo
+	 *   在开窗时按 buffered tag 分流回本门控（与普攻预输入同槽、last-press-wins）。
+	 * 入口档位（起手/直连）由 GA 激活时自扫前驱活动 GA 的资产 tag 决定——
+	 *   本门控只做机制判定，不传上下文。
+	 * @return true = 已激活或已缓冲（按下被接受）；false = 静默拒绝/无 GA 可激活。
+	 */
+	bool TryActivateSpecialAttack();
+
 protected:
 	/**
 	 * Pawn-ASC (2026-08): each squad member owns its own ASC + AttributeSet,
@@ -208,19 +226,6 @@ private:
 	void StartEnergyRegen();
 	void TickEnergyRegen();
 	FTimerHandle EnergyRegenTimerHandle;
-
-	// === Special-attack input gate (2026-09-03) ===
-
-	/**
-	 * Y 键合法性 + 激活（Input.Special 分支）：
-	 *   拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中 /（忙 且 无窗口）。
-	 *   忙 = 类扫描（活动 GA 是 UZZZGameplayAbility 子类）——资产 tag 枚举不可靠
-	 *     （GA_DashAttack 等 tag 是 BP 数据）。
-	 *   窗口 = CanCombo / State.Combat.Recovery 任一在身（2026-09-03 统一）。
-	 *   入口档位（起手/直连）由 GA 激活时自扫前驱活动 GA 的资产 tag 决定——
-	 *   本门控只做机制判定，不传上下文。
-	 */
-	void TryActivateSpecialAttack();
 
 	// === Switch-out state machine ===
 
