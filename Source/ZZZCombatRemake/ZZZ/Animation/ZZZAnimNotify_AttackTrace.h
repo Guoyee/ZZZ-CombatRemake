@@ -49,7 +49,12 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Attack Trace")
 	float TraceRadius = 50.0f;
 
-	/** GameplayEffect to apply on hit (must use UZZZDamageExecution as its ExecCalc). */
+	/**
+	 * GameplayEffect to apply on hit (must use UZZZDamageExecution as its
+	 * ExecCalc). Defaults to the shared GE_Damage BP (/Game/ZZZ/GE/GE_Damage,
+	 * loaded via FClassFinder in the CDO ctor) — override per instance for
+	 * hits with special modifier setups.
+	 */
 	UPROPERTY(EditAnywhere, Category = "Attack Trace")
 	TSubclassOf<UGameplayEffect> DamageEffect;
 

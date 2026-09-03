@@ -6,12 +6,25 @@
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "GameplayEffect.h"
 #include "Tags/ZZZGameplayTags.h"
+#include "UObject/ConstructorHelpers.h"
 #include "ZZZCombatRemake.h"  // LogZZZCombatRemake
 
 UZZZAnimNotify_AttackTrace::UZZZAnimNotify_AttackTrace()
 {
 	// Default assets — per-instance overridable in the montage editor.
 	HitStopEffect = UZZZGameplayEffect_HitStop::StaticClass();
+
+	// Damage GE default = the shared GE_Damage BP (/Game/ZZZ/GE/GE_Damage).
+	// FClassFinder in the CDO ctor is safe here: the CDO is lazily created
+	// after module load, when this module's native classes (UZZZDamageExecution
+	// among them — GE_Damage's ExecCalc) are all registered. Instances with
+	// per-hit damage setups still override the slot per notify.
+	static ConstructorHelpers::FClassFinder<UGameplayEffect> DamageFinder(
+		TEXT("/Game/ZZZ/GE/GE_Damage"));
+	if (DamageFinder.Succeeded())
+	{
+		DamageEffect = DamageFinder.Class;
+	}
 
 	// Low shake by default. Same CDO-timing caveat as the cue classes: the
 	// notify CDO can be constructed before InitializeNativeGameplayTags runs,
