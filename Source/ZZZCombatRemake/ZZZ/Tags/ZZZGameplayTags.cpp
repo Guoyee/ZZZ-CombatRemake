@@ -122,6 +122,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 	GameplayTagsSingleton.Effect_Enemy_AttackWindow = Manager.AddNativeGameplayTag(
 		FName("Effect.Enemy.AttackWindow"),
 		FString("Enemy attack wind-up (yellow-flash synced) — perfect dodge + parry window"));
+	GameplayTagsSingleton.Effect_Enemy_Dodged = Manager.AddNativeGameplayTag(
+		FName("Effect.Enemy.Dodged"),
+		FString("Attack perfectly dodged (granted by the dodge at press; consumed by the enemy-montage slow notify; attack GA EndAbility fallback)"));
 
 	// === SetByCaller Data ===
 	GameplayTagsSingleton.Data_Damage = Manager.AddNativeGameplayTag(

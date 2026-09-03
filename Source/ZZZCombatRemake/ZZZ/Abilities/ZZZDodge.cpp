@@ -73,15 +73,23 @@ void UZZZDodge::ActivateAbility(
 	// time): the nearest enemy within PerfectDodgeDetectRadius that carries
 	// Effect.Enemy.AttackWindow (an AnimNotifyState on the ENEMY's attack
 	// montage, synced with the yellow-flash wind-up warning) makes this dodge
-	// "perfect". Reward: slow-motion on the enemy immediately (SlowMotionEffect,
-	// 0.15 — the instant "time caught" feedback). No camera shake — the slow
-	// motion itself is the reward (2026-08-16). The PLAYER slow
-	// (PlayerSlowMotionEffect, 0.5) is NOT applied here — the displacement
-	// plays at normal speed; it fires later from the animator-placed notify
-	// (PlayerSlowEventTag). The old hit-frame CanDodge / DodgePerfect event
-	// chain was removed with this change. A dodge pressed outside any window is
-	// a plain dodge: i-frames + displacement, no reward.
-	if (ASC && SlowMotionEffect)
+	// "perfect". Pressing dodge inside the flash means the incoming attack is
+	// successfully evaded — no hit-frame confirmation is needed.
+	//
+	// Reward split (2026-09-03): we only FLAG the enemy here
+	// (Effect.Enemy.Dodged, loose tag). The slow-mo itself is paid by a
+	// consume notify (UZZZAnimNotify_EnemyDodgeSlow) on the ENEMY's attack
+	// montage, placed AFTER the damage frame — the strike plays out at normal
+	// speed and the slow starts once it has been thrown and missed (打空后),
+	// not at the dodge press while the enemy is still telegraphing.
+	// UZZZEnemyAttack::EndAbility removes the flag as the fallback (layer A
+	// double-track: this dodge only flags — the notify/GA owns the tag's end).
+	// No camera shake — the slow motion itself is the reward (2026-08-16). The
+	// PLAYER slow (PlayerSlowMotionEffect, 0.5) is NOT applied here — the
+	// displacement plays at normal speed; it fires later from the
+	// animator-placed notify (PlayerSlowEventTag). A dodge pressed outside any
+	// window is a plain dodge: i-frames + displacement, no reward.
+	if (ASC)
 	{
 		if (AZZZCombatEnemy* WindowEnemy = FindNearestEnemy(
 			PerfectDodgeDetectRadius, GameplayTags.Effect_Enemy_AttackWindow))
@@ -95,7 +103,7 @@ void UZZZDodge::ActivateAbility(
 			// Perfect-dodge status (layer E): State.PerfectDodge is granted by a
 			// Duration GE (GE_PerfectDodge_Status — BP-configured TargetTags, 0.5s
 			// fixed) so the follow-up attack routes to GA_DodgeCounter. Applied
-			// right at activation — the counter window covers the whole slow-mo.
+			// right at activation — the counter window covers the slow-mo.
 			if (PerfectDodgeEffect)
 			{
 				FGameplayEffectContextHandle PerfectContext = ASC->MakeEffectContext();
@@ -107,20 +115,14 @@ void UZZZDodge::ActivateAbility(
 				}
 			}
 
-			// Enemy slow — spec made on OUR ASC, applied on the ENEMY's ASC
-			// (ApplyGameplayEffectSpecToSelf applies to the caller; the GE's
-			// TargetTagRequirements on State.Enemy filters on the target side).
+			// 被闪避标记 (2026-09-03): 挂到敌人攻击生命周期上的 A 层标志。敌人攻击
+			// 蒙太奇上伤害帧之后的 EnemyDodgeSlow notify 消费它并对自己施放缓放 GE;
+			// 攻击 GA EndAbility 兜底清理。只挂标记、不放慢放——慢动作起点由敌人
+			// 蒙太奇的 notify 位置决定(打空后), 不再由闪避按下时决定。
 			if (UAbilitySystemComponent* EnemyASC = WindowEnemy->GetAbilitySystemComponent())
 			{
-				FGameplayEffectContextHandle EnemyContext = ASC->MakeEffectContext();
-				FGameplayEffectSpecHandle EnemySpec =
-					ASC->MakeOutgoingSpec(SlowMotionEffect, 1.0f, EnemyContext);
-				if (EnemySpec.IsValid())
-				{
-					EnemyASC->ApplyGameplayEffectSpecToSelf(*EnemySpec.Data.Get());
-				}
+				EnemyASC->AddLooseGameplayTag(GameplayTags.Effect_Enemy_Dodged);
 			}
-
 		}
 	}
 

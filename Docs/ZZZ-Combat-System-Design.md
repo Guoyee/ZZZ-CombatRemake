@@ -176,7 +176,8 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 
 - 输入：`Input.Dodge`（`bTriggerOnStarted=true`，Started 语义）。
 - `UZZZDodge`：Commit → Cancel 普攻 → 按 `LastInputVector` 选前/后蒙太奇（方向是输入数据非能力身份）；无敌 = `ActivationOwnedTags=State.Invulnerable`；二连闪 CD（DoubleDodgeWindow 0.7s → DodgeCooldown 0.7s）；程序化位移兜底（`bUseProceduralDisplacement`，DodgeAcceleration=11000 cm/s² + 0.22s ≈ 266cm；Root Motion 动画优先）。闪避全程可攻击（不配 BlockAbilitiesWithTag）。
-- 完美窗口 = 蒙太奇前段 AbilityWindow（`Effect.Ability.CanDodge`）；完美闪避：IncomingDamage 分支拦截（Invulnerable + CanDodge）→ 敌人 GE_SlowMotion + 玩家 GE_PlayerSlowMotion（决策窗口；**不震屏**——慢放本身就是奖励，2026-08-16）。
+- **完美判定 = 按下时窗口查询（2026-08-09 判定前移定稿）**：敌人黄闪同步窗（`Effect.Enemy.AttackWindow` notify）内按闪避即完美——攻击已被成功闪避，**无需伤害帧确认**。判定结果只决定路由：`State.PerfectDodge`（GE_PerfectDodge_Status，0.5s）+ `GetComboNext()` 追击分支=反击。
+- **慢动作发放（2026-09-03 定稿——起点在打空后，非按下时）**：完美闪避按下只给敌人挂 **`Effect.Enemy.Dodged`**（A 层 LooseTag，双轨：授予=闪避判定，消费=敌人蒙太奇 notify，兜底=攻击 GA EndAbility 清理）。敌人攻击蒙太奇**伤害帧之后**摆 `UZZZAnimNotify_EnemyDodgeSlow`：消费 tag → 敌人自施 `UZZZGameplayEffect_SlowMotion`（C++ 载体，Duration 1.0s 世界时间 + TimeDilation 0.15；notify 槽可覆写 GE_SlowMotion BP）——**攻击先正常挥出、落空后才起慢动作**。玩家慢放（GE_PlayerSlowMotion 0.5）仍由玩家蒙太奇位移末段 DodgeSlowStart notify 驱动。**不震屏**——慢放本身就是奖励（2026-08-16）。
 - 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02；**2026-09-03 重构为连段段**）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，由 `UZZZDodge` 的追击双槽（`DashFollowUpAbility`/`PerfectFollowUpAbility`，GA_Dodge BP 配置）经基类组合交接手递手激活——**无 AbilityTriggers**；闪避位移窗 notify 挂通用 CanCombo（原 CanDashAttack 废弃），追击分支按闪避按下时的完美判定（`GetComboNext()` 覆写）。⚠ 起手守卫（闪避中且 CanCombo 窗 → 广播 Input.Attack 并跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：追击技激活即打断闪避蒙太奇 → 闪避 EndAbility 移除窗口 tag（兜底清理，现删 CanCombo），事后判定会看到死窗口而误放普攻覆盖追击段（2026-08-11 修复，语义保留）。
 
 ### 4.9 弹刀 / 突击 / 编队切换（普通切换 ✅ 2026-09-02 落地；弹刀/突击待做）

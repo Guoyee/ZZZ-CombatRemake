@@ -24,10 +24,15 @@ class UZZZFollowUpAttack;
  * ActivateAbility queries the nearest enemy within PerfectDodgeDetectRadius
  * carrying Effect.Enemy.AttackWindow (an AnimNotifyState_AbilityWindow on the
  * ENEMY's attack montage, synced with the yellow-flash wind-up warning). If
- * found, the dodge is "perfect": slow-motion on the enemy (SlowMotionEffect,
- * 0.15) AND a lighter slow on ourselves (PlayerSlowMotionEffect, 0.5) — a
- * decision window — plus a camera shake. No hit-frame matching anymore
- * (the old CanDodge window / DodgePerfect event chain was removed).
+ * found, the dodge is "perfect" — pressing inside the flash means the
+ * incoming attack is successfully evaded, no hit-frame confirmation needed.
+ * The enemy is flagged (Effect.Enemy.Dodged); the slow-mo is paid later by a
+ * consume notify (UZZZAnimNotify_EnemyDodgeSlow) on the ENEMY's attack
+ * montage placed after the damage frame — the slow starts once the strike
+ * has been thrown and missed (打空后), not at the dodge press (2026-09-03).
+ * A lighter slow on ourselves (PlayerSlowMotionEffect, 0.5) stays
+ * animator-driven (PlayerSlowEventTag notify on the displacement tail).
+ * No camera shake — the slow motion itself is the reward (2026-08-16).
  * A dodge pressed outside any window is a plain dodge: i-frames + displacement,
  * no reward. The i-frame damage absorb itself (State.Invulnerable intercept in
  * the AttributeSet) is unchanged.
@@ -63,14 +68,6 @@ public:
 
 protected:
 	// === Perfect-dodge detection (2026-08-09: judgment at press time) ===
-
-	/**
-	 * Effect applied to the windowed ENEMY on a perfect dodge (GE_SlowMotion,
-	 * TimeDilation 0.15). The spec is made by our ASC but applied on the
-	 * enemy's ASC — the GE's TargetTagRequirements (State.Enemy) decides.
-	 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Dodge|PerfectDodge")
-	TSubclassOf<UGameplayEffect> SlowMotionEffect;
 
 	/** Perfect-dodge detection radius (cm) — nearest enemy in an attack window. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Dodge|PerfectDodge")

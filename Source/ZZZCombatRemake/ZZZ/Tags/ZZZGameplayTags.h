@@ -76,6 +76,7 @@ public:
 	FGameplayTag Effect_Ability_CanParry;     // "Effect.Ability.CanParry" (弹刀窗口——已废弃)
 	FGameplayTag Effect_Ability_CanDashAttack; // "Effect.Ability.CanDashAttack" (已废弃 2026-09-03——统一并入 Effect.Ability.CanCombo；保留注册防旧资产报错，勿用)
 	FGameplayTag Effect_Enemy_AttackWindow;   // "Effect.Enemy.AttackWindow" (敌人攻击前摇黄闪期——极限闪避 + 弹刀共用窗口)
+	FGameplayTag Effect_Enemy_Dodged;         // "Effect.Enemy.Dodged" (本次攻击已被完美闪避——闪避授予、敌人蒙太奇消费 notify 触发慢动作、攻击 GA EndAbility 兜底, 2026-09-03)
 
 	// === SetByCaller Data ===
 	FGameplayTag Data_Damage;          // "Data.Damage"

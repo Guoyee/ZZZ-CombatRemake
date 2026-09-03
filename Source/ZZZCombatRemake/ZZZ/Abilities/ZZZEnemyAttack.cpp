@@ -55,6 +55,15 @@ void UZZZEnemyAttack::EndAbility(
 	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
 	{
 		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Enemy_AttackWindow);
+
+		// Same double-track fallback for the perfect-dodge flag (2026-09-03):
+		// Effect.Enemy.Dodged is granted by UZZZDodge's press-time judgment and
+		// consumed by the UZZZAnimNotify_EnemyDodgeSlow on this montage. If the
+		// attack ends before that notify (cancelled / interrupted / montage
+		// never reached it), the stale flag must not linger — a LATER attack's
+		// notify would wrongly consume it and pay a slow for a dodge that
+		// never happened against it.
+		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Enemy_Dodged);
 	}
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);

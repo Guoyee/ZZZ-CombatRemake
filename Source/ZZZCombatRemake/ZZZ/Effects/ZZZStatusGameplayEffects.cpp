@@ -57,3 +57,21 @@ UZZZGameplayEffect_HitStop::UZZZGameplayEffect_HitStop()
 	Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(0.01f));
 	Modifiers.Add(Modifier);
 }
+
+UZZZGameplayEffect_SlowMotion::UZZZGameplayEffect_SlowMotion()
+{
+	// Duration is WORLD time (same mechanics as _HitStop above): 1.0f = 1.0s
+	// real slow-motion, not stretched by the dilation it applies.
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	DurationMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(1.0f));
+
+	// 0.15: the enemy crawls while the player is free (player slow is the
+	// lighter 0.5 GE on the player side). On expiry the aggregator recomputes
+	// TimeDilation and the bridge restores the enemy to 1.0 (or whatever a
+	// newer effect dictates).
+	FGameplayModifierInfo Modifier;
+	Modifier.Attribute = UZZZAttributeSet::GetTimeDilationAttribute();
+	Modifier.ModifierOp = EGameplayModOp::Override;
+	Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(0.15f));
+	Modifiers.Add(Modifier);
+}

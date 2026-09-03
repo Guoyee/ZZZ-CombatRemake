@@ -32,6 +32,9 @@
  *   _Dead / _Stun / _Alive (Infinite): persistent life-cycle markers.
  *   _HitStop  (Duration 0.03s): hit-stop freeze — TimeDilation override, the
  *     TimeDilation bridge mirrors it to CustomTimeDilation (see class comment).
+ *   _SlowMotion (Duration 1.0s): perfect-dodge enemy slow — TimeDilation
+ *     override 0.15, applied by the enemy's own dodge-slow consume notify
+ *     (2026-09-03). Same Duration-world-time mechanics as _HitStop.
  */
 UCLASS()
 class UZZZGameplayEffect_Stagger : public UGameplayEffect
@@ -117,4 +120,26 @@ class UZZZGameplayEffect_HitStop : public UGameplayEffect
 
 public:
 	UZZZGameplayEffect_HitStop();
+};
+
+/**
+ * Perfect-dodge enemy slow (完美闪避敌人慢放) — NOT a tag carrier: a Duration GE
+ * overriding TimeDilation to 0.15 so the bridge slows the enemy's
+ * CustomTimeDilation. Same world-time duration semantics as _HitStop — 1.0s
+ * real slow regardless of the dilation itself.
+ *
+ * Default choice of UZZZAnimNotify_EnemyDodgeSlow::SlowMotionEffect —
+ * per-notify overridable with a BP child (or the pre-existing GE_SlowMotion
+ * asset) for tuning. Applied by the ENEMY to itself when its consume notify
+ * fires after a perfectly-dodged attack — the slow starts once the strike has
+ * been thrown and missed (打空后), not at the player's dodge press
+ * (2026-09-03).
+ */
+UCLASS()
+class UZZZGameplayEffect_SlowMotion : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UZZZGameplayEffect_SlowMotion();
 };
