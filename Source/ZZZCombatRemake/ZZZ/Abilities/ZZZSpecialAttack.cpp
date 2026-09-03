@@ -8,10 +8,63 @@
 #include "Tags/ZZZGameplayTags.h"
 #include "ZZZCombatRemake.h"
 
-const FName UZZZSpecialAttack::QuickEntrySectionName(TEXT("QuickStrike"));
-
 UZZZSpecialAttack::UZZZSpecialAttack()
 {
+}
+
+UAnimMontage* UZZZSpecialAttack::ResolveLeadMontage() const
+{
+	UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo();
+	if (!ASC)
+	{
+		return nullptr;
+	}
+
+	// 前驱 = 当前活动的战斗 GA(除特殊技自身)。激活同步性保证: 本 GA 激活瞬间
+	// 前驱 GA 仍活动(其 EndAbility 要等本技蒙太奇打断它)——见类注释。
+	// 只取第一个活动战斗 GA; 档位按 Direct > Combo > Dash 优先级匹配其资产 tag。
+	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (!Spec.Ability || !Spec.IsActive()
+			|| Spec.Ability->GetClass()->IsChildOf(UZZZSpecialAttack::StaticClass()))
+		{
+			continue;
+		}
+		if (!Spec.Ability->GetClass()->IsChildOf(UZZZGameplayAbility::StaticClass()))
+		{
+			continue;
+		}
+
+		const FGameplayTagContainer& AssetTags = Spec.Ability->GetAssetTags();
+
+		// HasTagExact: 规则行是段位身份 tag(如 Ability.Attack.Basic.BasicAttack02),
+		// 只要求精确命中, 不做父 tag 层级放宽。
+		for (const FGameplayTag& Tag : DirectEntryContextTags)
+		{
+			if (Tag.IsValid() && AssetTags.HasTagExact(Tag))
+			{
+				return nullptr;  // 免起手直连主体
+			}
+		}
+		for (const FGameplayTag& Tag : ComboLeadContextTags)
+		{
+			if (Tag.IsValid() && AssetTags.HasTagExact(Tag))
+			{
+				return LeadComboMontage;
+			}
+		}
+		for (const FGameplayTag& Tag : DashLeadContextTags)
+		{
+			if (Tag.IsValid() && AssetTags.HasTagExact(Tag))
+			{
+				return LeadDashMontage;
+			}
+		}
+		break;  // 只解析第一个活动前驱
+	}
+
+	// 自由态 / 收刀段(无活动前驱)或前驱未匹配任何规则 → A 档完整起手。
+	return LeadFullMontage;
 }
 
 void UZZZSpecialAttack::ActivateAbility(
@@ -31,17 +84,16 @@ void UZZZSpecialAttack::ActivateAbility(
 
 	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
 
-	// 1) Enhanced branch lives HERE (energy is ability-owned state, not an
-	// input-gate decision — the character gate never picks normal/enhanced).
+	// 1) 主体版本分支留在 GA 内(能量判定, 输入门控不预选): Energy >= EnergyCost
+	//    → 强化主体 + 扣费。起手 A/B/C 与版本无关、共用同一套。
 	const float CurrentEnergy = ASC->GetNumericAttribute(UZZZAttributeSet::GetEnergyAttribute());
 	const bool bEnhanced = CurrentEnergy >= EnergyCost;
+	ChosenBodyMontage = bEnhanced ? EnhancedMontage : AttackMontage;
 
 	if (bEnhanced)
 	{
-		// 2) Spend. Manual apply — engine AbilityCosts clone the CDO spec and
-		// cannot carry a per-instance SetByCaller magnitude. All energy changes
-		// go through UZZZGameplayEffect_EnergyDelta (aggregator + value-change
-		// delegate stay live); magnitude must be set BEFORE apply.
+		// 手动 Apply——引擎 AbilityCosts 克隆 CDO spec, 无法携带 per-instance
+		// SetByCaller 幅值。能量变化一律走 GE(聚合器 + value-change delegate 存活)。
 		FGameplayEffectContextHandle Ctx = ASC->MakeEffectContext();
 		FGameplayEffectSpecHandle CostSpec =
 			ASC->MakeOutgoingSpec(UZZZGameplayEffect_EnergyDelta::StaticClass(), 1.0f, Ctx);
@@ -52,24 +104,16 @@ void UZZZSpecialAttack::ActivateAbility(
 		}
 	}
 
-	// 3) Quick entry (skip strike 1, 段 2/4 衔接): the flag rides the
-	// TriggerEventData of the character gate's TryActivateAbility call — no
-	// AbilityTriggers, no basic-montage notifies (see class comment).
-	const bool bQuickEntry = TriggerEventData
-		&& TriggerEventData->EventTag == GameplayTags.Event_Combat_SpecialQuickEntry;
-
-	// 4) Decision-window end (FollowUp template): the perfect-dodge player
-	// slow exists only to give the player time to input the follow-up. Once
-	// the special activates the slow ends — otherwise it would play at 0.5x.
-	// No-op on normal paths.
+	// 2) Decision-window end (FollowUp template): 完美闪避的玩家慢放只用于决策,
+	//    特殊技激活即结束——否则全程 0.5x。
 	{
 		FGameplayTagContainer SlowTags;
 		SlowTags.AddTag(GameplayTags.State_SlowMotion);
 		ASC->RemoveActiveEffectsWithGrantedTags(SlowTags);
 	}
 
-	// 5) Rotate, then play — full entries start at the first section (both
-	// strikes, linear); quick entries jump to the strike-2 section.
+	// 3) 转向(可选)后按入口档位播放: 有起手 → 两段式(Lead 完成切主体);
+	//    免起手/槽空 → 直连主体。
 	if (bRotateToTarget)
 	{
 		RotateToTargetTask = UAbilityTask_RotateToTarget::RotateToTarget(
@@ -77,28 +121,48 @@ void UZZZSpecialAttack::ActivateAbility(
 		RotateToTargetTask->ReadyForActivation();
 	}
 
-	UAnimMontage* MontageToPlay = bEnhanced ? EnhancedMontage : AttackMontage;
-	const FName StartSection = bQuickEntry ? QuickEntrySectionName : NAME_None;
-
-	if (bEnhanced)
+	UAnimMontage* LeadMontage = ResolveLeadMontage();
+	if (LeadMontage)
 	{
+		bLeadPending = true;
 		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("%s: ENHANCED special (energy %.0f -> %.0f), quick=%s"),
-			*GetName(), CurrentEnergy, CurrentEnergy - EnergyCost,
-			bQuickEntry ? TEXT("yes") : TEXT("no"));
+			TEXT("%s: special lead '%s' (%s) — body follows on lead completion"),
+			*GetName(), *LeadMontage->GetName(),
+			bEnhanced ? TEXT("enhanced pending") : TEXT("normal pending"));
+		if (!PlayMontage(LeadMontage))
+		{
+			return;  // PlayMontage already ended the ability (null montage)
+		}
 	}
 	else
 	{
 		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("%s: normal special (energy %.0f < cost %.0f), quick=%s"),
-			*GetName(), CurrentEnergy, EnergyCost,
-			bQuickEntry ? TEXT("yes") : TEXT("no"));
+			TEXT("%s: special direct body (%s) — no lead (free/skip entry)"),
+			*GetName(), bEnhanced ? TEXT("enhanced") : TEXT("normal"));
+		if (!PlayMontage(ChosenBodyMontage))
+		{
+			return;  // PlayMontage already ended the ability (null montage)
+		}
+	}
+}
+
+void UZZZSpecialAttack::OnMontageCompleted()
+{
+	// 起手完成 → 切主体(两段式): 主体播放由基类回调链收尾(完成/打断 → EndAbility)。
+	if (bLeadPending)
+	{
+		bLeadPending = false;
+		UE_LOG(LogZZZCombatRemake, Log,
+			TEXT("%s: special lead complete — playing body '%s'"),
+			*GetName(), ChosenBodyMontage ? *ChosenBodyMontage->GetName() : TEXT("<null>"));
+		if (!PlayMontage(ChosenBodyMontage))
+		{
+			return;  // PlayMontage already ended the ability (null montage)
+		}
+		return;
 	}
 
-	if (!PlayMontage(MontageToPlay, StartSection))
-	{
-		return;  // PlayMontage already ended the ability (null montage)
-	}
+	Super::OnMontageCompleted();
 }
 
 void UZZZSpecialAttack::EndAbility(
@@ -107,6 +171,8 @@ void UZZZSpecialAttack::EndAbility(
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	bool bReplicateEndAbility, bool bWasCancelled)
 {
+	bLeadPending = false;
+
 	// Window-tag fallback (CLAUDE.md rule 1 layer A): a montage interruption
 	// may skip AnimNotifyState::NotifyEnd, leaving combo-window tags stuck on
 	// the ASC and wrongly routing later inputs. This ability grants no windows

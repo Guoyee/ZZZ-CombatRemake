@@ -166,16 +166,6 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats", meta = (ClampMin = "0.05"))
 	float EnergyRegenInterval = 0.2f;
 
-	// === Special-attack entry config (2026-09-03) ===
-
-	/**
-	 * 在这些普攻段位的连段窗口内按 Y 触发特殊技「快速派生」（跳打击 1, 直接从
-	 * QuickStrike section 起手）。空 = 永无快速派生。默认 {2,4}（Koleda 4 段）;
-	 * Jane（5 段）后续按 kit 覆写。
-	 */
-	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Combat")
-	TArray<int32> QuickEntryComboIndexes = { 2, 4 };
-
 	// === Switch configuration (2026-08-31, 全部可空降级) ===
 
 	/** 切换退场需等其结束的 GA 资产 tag 列表；空 → 运行时默认 Ability.Attack.Basic（资产 tag 层级匹配 GA_01..04）。 */
@@ -226,9 +216,9 @@ private:
 	 *   拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中 /（忙 且 无窗口）。
 	 *   忙 = 类扫描（活动 GA 是 UZZZGameplayAbility 子类）——资产 tag 枚举不可靠
 	 *     （GA_DashAttack 等 tag 是 BP 数据）。
-	 *   窗口 = CanCombo / CanDashAttack / State.Combat.Recovery 任一在身。
-	 *   快速派生 = 忙(普攻段)且窗口在身且活动普攻 ComboIndex ∈ QuickEntryComboIndexes
-	 *     → EventData 带 Event.Combat.SpecialQuickEntry 后 TryActivateAbility。
+	 *   窗口 = CanCombo / State.Combat.Recovery 任一在身（2026-09-03 统一）。
+	 *   入口档位（起手/直连）由 GA 激活时自扫前驱活动 GA 的资产 tag 决定——
+	 *   本门控只做机制判定，不传上下文。
 	 */
 	void TryActivateSpecialAttack();
 

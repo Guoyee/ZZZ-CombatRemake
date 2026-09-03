@@ -65,11 +65,13 @@ UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMon
 │                        #   + Blocked=PerfectDodge）/ GA_DodgeCounter（额外 Required=PerfectDodge）
 ├── UZZZAssistDefensive  # 弹刀：入场全程无敌，Cancel 敌人攻击 + 敌人硬直（Phase 3 待做）
 ├── UZZZAssistOffensive  # 突击：入场前段小无敌 + 追击命中（Phase 3 待做）
-├── UZZZSpecialAttack    # 特殊技 ✅ 2026-09-03（详见 §4.13）：普通=AttackMontage /
-│                        #   强化=EnhancedMontage（能量≥EnergyCost 扣费——分支判定在 GA 内）;
-│                        #   快速派生=TriggerEventData 带 SpecialQuickEntry → QuickStrike section;
+├── UZZZSpecialAttack    # 特殊技 ✅ 2026-09-03（详见 §4.13）：可选起手 A/B/C（Lead,
+│                        #   含弱打击1）+ 主体 Body（普通=AttackMontage / 强化=EnhancedMontage,
+│                        #   仅打击2;能量≥EnergyCost 扣费,判定在 GA 内;起手普通/强化共用）;
+│                        #   入口=激活时自扫前驱活动 GA 资产 tag 匹配 Direct/ComboLead/DashLead
+│                        #   表(2/4段免起手直连);两段式播放(Lead 完成切 Body, bLeadPending);
 │                        #   Asset Tags={Ability.Attack.Basic, Ability.Attack.Special};
-│                        #   蒙太奇全程属 GA（无窗口/无 EndEventTag notify）
+│                        #   蒙太奇内无窗口/无 EndEventTag notify
 ├── UZZZUltimate         # 终结技（全队 Decibel）——Phase 5
 └── UZZZChainAttack      # 连携技（Director 调度）——Phase 5
 ```
@@ -93,10 +95,13 @@ Ability:      Ability.Attack.Basic(.BasicAttack01~04) / Ability.Attack.Enemy
 State:        State.Alive / Dead / Combat.Recovery / Stun / Staggered / Invulnerable
               / SlowMotion / Enemy / Player / Attacking / PerfectDodge / PassThrough
 Event:        Event.Combat.Hit / Elimination / Stun / DodgePerfect / DodgeEnd / AttackEnd
-              / DodgeSlowStart / Event.Combat.SpecialQuickEntry（特殊技快速派生入口，2026-09-03）
-Effect:       Effect.Ability.CanCombo / Effect.Input.CanBuffer / Effect.Enemy.AttackWindow
-              / Effect.Ability.CanDashAttack（CanDodge / CanParry 已废弃：判定前移 + 弹刀共用
-              Enemy.AttackWindow，勿用）
+              / DodgeSlowStart / Event.Combat.AttackFollowUp（追击请求——闪避位移 CanCombo 窗内
+              按攻击时角色门控广播，冲刺攻击/闪避反击的 AbilityTriggers 触发事件，2026-09-03）
+Effect:       Effect.Ability.CanCombo（2026-09-03 起为通用"可输入下一动作"窗——普攻连段/
+              闪避位移追击/冲刺攻击尾/特殊技入口共用） / Effect.Input.CanBuffer
+              / Effect.Enemy.AttackWindow
+              / Effect.Ability.CanDashAttack（已废弃 2026-09-03——统一并入 CanCombo，保留注册防
+              旧资产；CanDodge / CanParry 已废弃：判定前移 + 弹刀共用 Enemy.AttackWindow，勿用）
 Data:         Data.Damage / Data.Daze / Data.Energy（2026-09-03——⚠ 另需
               DefaultGameplayTags.ini 预注册：能量 GE CDO 的 FSetByCallerFloat.DataTag
               构造期解析，缺失 = 静默 0）
@@ -170,7 +175,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - 输入：`Input.Dodge`（`bTriggerOnStarted=true`，Started 语义）。
 - `UZZZDodge`：Commit → Cancel 普攻 → 按 `LastInputVector` 选前/后蒙太奇（方向是输入数据非能力身份）；无敌 = `ActivationOwnedTags=State.Invulnerable`；二连闪 CD（DoubleDodgeWindow 0.7s → DodgeCooldown 0.7s）；程序化位移兜底（`bUseProceduralDisplacement`，DodgeAcceleration=11000 cm/s² + 0.22s ≈ 266cm；Root Motion 动画优先）。闪避全程可攻击（不配 BlockAbilitiesWithTag）。
 - 完美窗口 = 蒙太奇前段 AbilityWindow（`Effect.Ability.CanDodge`）；完美闪避：IncomingDamage 分支拦截（Invulnerable + CanDodge）→ 敌人 GE_SlowMotion + 玩家 GE_PlayerSlowMotion（决策窗口；**不震屏**——慢放本身就是奖励，2026-08-16）。
-- 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，差异全在数据——GA_DashAttack（Trigger=Input.Attack + Required=CanDashAttack + Blocked=PerfectDodge）、GA_DodgeCounter（额外 Required=PerfectDodge）。⚠ 起手守卫（闪避中且 CanDashAttack → 跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：冲刺攻击激活即打断闪避蒙太奇 → 闪避 EndAbility 移除 CanDashAttack 窗口 tag（兜底清理），事后判定会看到死窗口而误放普攻覆盖冲刺攻击（2026-08-11 修复）。
+- 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，差异全在数据——**2026-09-03 窗口统一后**：GA_DashAttack（Trigger=`Event.Combat.AttackFollowUp` + Required=CanCombo + Blocked=PerfectDodge）、GA_DodgeCounter（额外 Required=PerfectDodge）；闪避位移窗 notify 改挂通用 CanCombo。⚠ 起手守卫（闪避中且 CanCombo 窗 → 攻击输入改写为 AttackFollowUp 事件并跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：冲刺攻击激活即打断闪避蒙太奇 → 闪避 EndAbility 移除窗口 tag（兜底清理，现删 CanCombo），事后判定会看到死窗口而误放普攻覆盖冲刺攻击（2026-08-11 修复，语义保留）。
 
 ### 4.9 弹刀 / 突击 / 编队切换（普通切换 ✅ 2026-09-02 落地；弹刀/突击待做）
 
@@ -215,25 +220,34 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 - 注册表镜像坑（R20）：GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()` + `IsOverride=true` + ini 注册（`+Prop=` 语法），否则 CueManager 扫描 unmapped 静默丢弃；资产重存需先标 dirty。
 - 扩展：红闪（不可闪避）/蓝闪（弹刀）同一 GCN 换色或按敌人子类配不同 cue tag。
 
-### 4.13 特殊技 + 能量系统（✅ C++ 2026-09-03；资产待做）
+### 4.13 特殊技 + 能量系统（✅ C++ 2026-09-03 定稿；资产待做）
 
-**触发与门控**（Y 键，无 CD，无缓冲）：
-- 可触发 = **各技能可输入窗口**（`Effect.Ability.CanCombo` / `Effect.Ability.CanDashAttack` / `State.Combat.Recovery` 任一在身）**+ 自由态**（无任何玩家战斗 GA 活动）。
-- 拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（**忙 且 无窗口**）——忙用**类扫描**（活动 spec 的 Ability 是 `UZZZGameplayAbility` 子类），勿用 tag 枚举（GA_DashAttack 等资产 tag 是 BP 数据，代码不可证，漏判 = Y 顶掉进行中的技能）。
-- 门控全在 `AZZZCharacter::TryActivateSpecialAttack()`（`Input_AbilityInputTagPressed` 的 Input.Special 分支）；GA **勿配 AbilityTriggers**（否则同帧双激活）。
+**动作结构（2026-09-03 定稿）**：特殊技 = **可选起手段 Lead（含打击 1：弱伤害/长前摇） + 主体 Body（仅打击 2：主要伤害源）**。主体分普通/强化两版（强化 = Energy ≥ EnergyCost，判定+扣费在 GA 内）；**起手 A/B/C 与普通/强化无关、普通/强化共用一套**。设计意图：2/4 段快速打击（免起手直连主体）跳过低效打击 1，鼓励玩家多用。
 
-**普通 vs 强化（单 GA 内运行时分支）**：同一 `UZZZSpecialAttack` BP 子类；`Energy >= EnergyCost`（默认 50，门槛==消耗，逐角色 GA 配）→ 播 `EnhancedMontage` 并扣 EnergyCost（手动 GE Apply——引擎 AbilityCosts 无法携带 per-instance SetByCaller 幅值）；不足 → 播基类 `AttackMontage`，不扣费。能量判定**留在 GA 内**（输入门控不预选版本）。
+**入口档位（Y 键；前驱活动 GA 资产 tag → 档位）**：
 
-**快速派生**（段 2/4 衔接）：普攻第 2/4 段（角色 BP `ZZZ|Combat.QuickEntryComboIndexes`，空=禁用）连段窗口内按 Y → 跳过打击 1，从蒙太奇 `QuickStrike` section 起播。入口标签 `Event.Combat.SpecialQuickEntry` 随 Character 的 `InternalTryActivateAbility(Handle, ..., &EventData)` 直传（公开 `TryActivateAbility` 不带事件数据；引擎 `CallActivateAbility` 会把它送进 `ActivateAbility` 覆写）——**不在普攻蒙太奇加 notify**。特殊技动作 = 一次 Y 打完两击（同蒙太奇两伤害 notify）；普通/强化蒙太奇各含 `QuickStrike` section（起点=打击 2 预备帧，对齐普攻段收招姿态），4 情形（普通/强化 × 完整/快速）由 1 类 + 2 资产覆盖。播放走基类 `PlayMontage(Montage, StartSection)`（2026-09-03 基类加可选 StartSection 透传，加法改动）。
+| 入口上下文 | 档位 | 匹配 |
+|---|---|---|
+| 自由态 / 收刀段 / 无前驱 | 起手 A（完整前摇） | 默认（未匹配任何规则表） |
+| 普攻段（Koleda 1/3） | 起手 B（短衔接） | 前驱资产 tag ∈ `ComboLeadContextTags` |
+| 冲刺攻击尾窗 | 起手 C | 前驱资产 tag ∈ `DashLeadContextTags` |
+| 普攻段（Koleda 2/4） | **免起手直连主体**（快速打击） | 前驱资产 tag ∈ `DirectEntryContextTags` |
 
-**蒙太奇/GA 生命周期（结构 A）**：整条蒙太奇属 GA——无窗口 notify、无 AttackEnd notify（误放会导致 GA 提前结束、收尾变无主段）；蒙太奇播完 = 基类回调 EndAbility；收尾后自由态，攻击从普攻第 1 段重起。EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`（防御误拷 notify 布局）。激活照 `UZZZFollowUpAttack` 模板清 `State.SlowMotion`（完美闪避慢放决策窗结束，防 0.5x 全程）。
+- 档位表 + 起手槽 + 主体槽全部配置在**角色专属 GA BP**（`GA_SpecialAttack_*`）上——Koleda/Jane 各自独立、零 C++；规则行 tag 用 `HasTagExact` 匹配。
+- **入口解析在 GA 内自扫**：Activation 是同步的，本 GA 激活瞬间前驱 GA 仍活动（其 EndAbility 要等本技蒙太奇打断它）→ 直接读 `Spec.Ability->GetAssetTags()` 查表，**不需要人物身上挂上下文 tag、不需要 EventData 传参**；角色门控只做机制判定。
+- 降级：匹配档的起手槽为空 → 直连主体；无前驱/未匹配 → A（A 空 → 直连）。2/4 段尾帧姿态 = 主体首帧姿态 = 各起手出口姿态（动画师单一收敛契约）。
 
-**资产双 tag 副作用（有意为之）**：GA Asset Tags = {`Ability.Attack.Basic`, `Ability.Attack.Special`} → ① 普攻起手抑制 `!IsActive(Basic)` 自动覆盖（特殊技中按攻击不顶掉它）② 切人默认等待 tag Basic → 特殊技期间切人自动等播完 ③ Dodge 的 `CancelAbilities(Basic)` → 闪避可取消特殊技（特性，与既有约定一致）。
+**窗口统一（2026-09-03）**：`Effect.Ability.CanDashAttack` **废弃**（保留注册防旧资产）——一切攻击族"可输入下一动作"窗口统一为 `Effect.Ability.CanCombo`（普攻连段窗/闪避位移追击窗/冲刺攻击尾窗/收刀段均用 AbilityWindow notify 摆 CanCombo，像连段一样填）。由此冲刺攻击/闪避反击的触发从 `AbilityTriggers=[Input.Attack] + Required=CanDashAttack` 改为 `AbilityTriggers=[Event.Combat.AttackFollowUp] + Required=CanCombo(+PerfectDodge)`——角色门控在"闪避活动 + CanCombo 窗"内把攻击输入改写为该专用事件（普通 Input.Attack 广播绝不触发追击族）。特殊技门控窗口集合随之简化为 `{CanCombo, State.Combat.Recovery}`。
 
-**能量属性/GE**：`UZZZAttributeSet::Energy/MaxEnergy`（默认 0/100，PreAttributeChange clamp）。**所有能量变化走 `UZZZGameplayEffect_EnergyDelta`**（C++ Instant 载体，Additive modifier on Energy，幅值 SetByCaller `Data.Energy`）——直改 `SetEnergy()` 绕过聚合器，未来能量条绑 ValueChangeDelegate 收不到。⚠ 5.8 引擎修正：`FGameplayEffectModifierMagnitude` 成员已 protected，SetByCaller 幅值只能 ctor 传 `FSetByCallerFloat`；`Data.Energy` 依赖 ini 预注册（CDO 构造期解析，缺失静默 0）。
-- **命中回能**（每次命中固定值，默认 +2，逐角色 `EnergyGainPerHit`）：挂 target 侧 AttributeSet 伤害确认单点（IncomingDamage 分支、Hit 事件后/死亡判定前）——条件 instigator 是 `AZZZCharacter` 且目标带 `State.Enemy`；击杀帧给、被无敌吸收帧不给（吸收已提前 return）。
-- **自然回能**（默认 1/s，`EnergyRegenPerSecond` × 0.2s tick）：角色世界 FTimer 循环（`StartEnergyRegen`，InitAbilitySystem 末尾启动），世界时间不受 HitStop/慢放拉伸；隐藏队员照常回。
-- 能量在切换中保留（每成员独立 AttributeSet，与战损同语义）；`InitialEnergy`（默认 0，PIE 调参可临时抬高）。
+**门控（AZZZCharacter::TryActivateSpecialAttack，Input.Special 分支）**：拒绝 = 切换退场中 / 已阵亡 / 特殊技自身活动中（防自链）/（忙 且 无窗口）。忙 = **类扫描**（活动 spec 是 `UZZZGameplayAbility` 子类），勿 tag 枚举。GA **勿配 AbilityTriggers**。
+
+**两段式播放（单 GA 生命周期）**：激活 = 能量判版本+扣费 → 清 `State.SlowMotion`（FollowUp 模板）→ 转向 → 有起手则 `PlayMontage(Lead)`，Lead 的 OnCompleted（覆写拦截，`bLeadPending` 状态）→ `PlayMontage(Body)`；免起手直连主体。Lead/Body 蒙太奇内**不放窗口 notify、不放 AttackEnd notify**（误放 = GA 提前结束/收尾无主）；蒙太奇完成/打断 → EndAbility；EndAbility 兜底清 `CanCombo/CanBuffer/Recovery`。基类蒙太奇四回调加 `virtual`（2026-09-03，加法）。
+
+**资产双 tag 副作用（有意为之）**：GA Asset Tags = {`Ability.Attack.Basic`, `Ability.Attack.Special`} → ① 普攻起手抑制 `!IsActive(Basic)` 自动覆盖 ② 切人默认等待 Basic → 特殊技中切人自动等播完 ③ Dodge `CancelAbilities(Basic)` → 闪避可取消特殊技（特性）。
+
+**能量属性/GE**：`Energy/MaxEnergy`（0/100，clamp）；**所有能量变化走 `UZZZGameplayEffect_EnergyDelta`**（C++ Instant 载体 + SetByCaller `Data.Energy`）——直改绕过聚合器会断未来能量条 ValueChangeDelegate。⚠ 5.8：`FGameplayEffectModifierMagnitude` 成员 protected，SetByCaller 只能 ctor 传 `FSetByCallerFloat`；`Data.Energy` 需 ini 预注册（缺失静默 0）。
+- **命中回能**：每次命中固定值（默认 +2，`EnergyGainPerHit`），AttributeSet 伤害确认单点（Hit 事件后/死亡判定前；instigator 是玩家 + 目标 `State.Enemy`）；击杀帧给、吸收帧不给。命中回能按次计 → 完整版（打击1+2）回能多但低效、快速版一击回能少但高效，**数值天然奖励快速打击**。
+- **自然回能**：默认 1/s（`EnergyRegenPerSecond` × 0.2s tick），世界 FTimer，不受 HitStop/慢放拉伸，隐藏队员照常回。能量切换保留；`InitialEnergy` 默认 0（PIE 可临时抬高）。
 
 ## 五、实施路线图
 

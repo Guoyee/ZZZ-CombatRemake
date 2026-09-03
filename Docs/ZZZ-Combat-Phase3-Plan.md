@@ -20,7 +20,7 @@
 - **Task 5a（2026-08-16 重做为 notify 驱动）**：打击帧打击感——`UZZZAnimNotify_AttackTrace` 新增 per-instance 开关（`bApplyHitStop` + 默认 GE `UZZZGameplayEffect_HitStop`、`bApplyCameraShake` + `CameraShakeCueTag` FGameplayTag 三档 Low/Mid/High 默认 Low，ini 注册；一个 tag 只挂一个处理器，共用单一 `BP_HitShake` 资产）；卡肉 = GE（Duration 0.03s 世界时间 + TimeDilation Override 0.01——LOW 档默认，重击换 BP 子类；到期 aggregator 恢复，无定时器无守卫）；命中保证 = 空挥不进循环 + pre-hit 快照（Invulnerable/Dead，击杀帧保留反馈）；反击激活移除玩家慢放（`UZZZFollowUpAttack` 的 `RemoveActiveEffectsWithGrantedTags(State.SlowMotion)`）。旧 ApplyHitStop 机制全删（两角色）。⚠ 桥接的组件抽取仍推迟至第三个 Actor 类出现。
 - **新 Tag 已注册**：`Effect.Enemy.AttackWindow`、`State.PerfectDodge`、`Effect.Ability.CanDashAttack`、`Event.Combat.DodgeSlowStart`。
 - **2026-09-02 攻击族基础件（构建通过，详见架构文档 §3.2/§4.2/§4.3/§4.7）**：基类组合交接 `TrySetupComboHandoff`（WaitCombo/连段过渡自 BasicAttack 上移，opt-in——BasicAttack 无条件调用保留终端 flush，FollowUpAttack 配 Next 才调用）；`EndEventTag` 未配置默认 `Event.Combat.AttackEnd`（ini 预注册防 CDO ensure）；穿敌 notify `AnimNotifyState_CollisionPassThrough`（`WindowTag=State.PassThrough`，RotateToTarget tick 门控停转向）+ 旋转覆盖 `AnimNotifyState_RotationOverride`；`Move()` 收刀 tag 消费方清理（2026-08-29 已修）。dash→普攻2 链出需资产侧补：GA_DashAttack 配 `NextComboAbility=GA_BasicAttack_02` + 冲刺蒙太奇收刀段挂 CanCombo 窗口。
-- **2026-09-03 特殊技 + 能量系统（构建通过；定稿见架构文档 §4.13）**：`UZZZSpecialAttack`（普通=AttackMontage/强化=EnhancedMontage，能量≥EnergyCost 判定+扣费在 GA 内；快速派生=`Event.Combat.SpecialQuickEntry` EventData → `QuickStrike` section；Asset Tags={Basic, Special}；清慢放 GE；EndAbility 兜底清窗 tag）+ 基类 `PlayMontage(Montage, StartSection)` 透传；`Energy/MaxEnergy` 属性 + `UZZZGameplayEffect_EnergyDelta`（C++ SetByCaller 载体，Data.Energy ini 预注册——5.8 幅值结构修正 FSetByCallerFloat ctor）；命中回能（AttributeSet 伤害确认单点，instigator 玩家 + 目标 State.Enemy）+ 自然回能（世界 FTimer）；Y 门控 `TryActivateSpecialAttack`（窗口+自由态；忙=类扫描）。**资产待做**（步骤见架构文档 §4.13 与 CLAUDE.md 当前状态）。
+- **2026-09-03 特殊技 + 能量系统（构建通过；定稿见架构文档 §4.13）**：`UZZZSpecialAttack` 档位模型——可选起手 A/B/C（Lead，含弱打击1，普通/强化共用）+ 主体 Body 普通/强化（仅打击2；能量≥EnergyCost 判定+扣费在 GA 内）；入口 = 激活时自扫前驱活动 GA 资产 tag 匹配 Direct/ComboLead/DashLead 规则表（`HasTagExact`，GA BP 配置；2/4 段免起手直连主体）；两段式播放（Lead OnCompleted 切 Body，`bLeadPending`）；Asset Tags={Basic, Special}；清慢放 GE；EndAbility 兜底清窗 tag。**窗口统一**：CanDashAttack 废弃 → 通用 CanCombo（dodge 位移追击窗、普攻连段窗、攻击尾窗同一 notify 惯例）；冲刺攻击/闪避反击触发改 `Event.Combat.AttackFollowUp`（门控在闪避活动+CanCombo 窗内广播，GA AbilityTriggers=新事件 + Required=CanCombo/PerfectDodge）。`Energy/MaxEnergy` + `UZZZGameplayEffect_EnergyDelta`（C++ SetByCaller 载体，Data.Energy ini 预注册——5.8 幅值结构修正 FSetByCallerFloat ctor）；命中回能（AttributeSet 伤害确认单点）+ 自然回能（世界 FTimer）；Y 门控 `TryActivateSpecialAttack` 简化（窗口={CanCombo, Recovery}+自由态；忙=类扫描；不传上下文）。**资产待做**（步骤见架构文档 §4.13 与 CLAUDE.md 当前状态；含窗口统一的人工改动：AM_Dodge 位移窗 notify → CanCombo、GA_DashAttack/Counter 触发 tag/Required 更新、每角色 5 条特殊技蒙太奇）。
 
 关键实现定稿（后续工作依赖）：
 - **两段式统一机制**：基类 `EndEventTag`（DodgeEnd / AttackEnd）+ 过渡段无主播放（bStopWhenAbilityEnds=false）。
@@ -31,14 +31,15 @@
 
 1. `Effects/ZZZStatusGameplayEffects`：`_Stagger`（0.35s）/ `_Dead` / `_Stun` / `_Alive`（Infinite）**已落地** ✅（C/B 层，tag 一律应用时 `DynamicGrantedTags`，照 Faction 模式）。`UZZZGameplayEffect_WindowTag`（Infinite）**已取消** ⛔（2026-08-29 定稿：A 层窗口保持 LooseTag）。
 2. ~~`AnimNotifyState_AbilityWindow`/`InputWindow` GE 化~~ **已取消** ⛔（2026-08-29 定稿：notify 共享实例下 LooseTag 最简洁；A 层窗口 tag = notify 配对 LooseTag + 双轨兜底 —— 有主段 EndAbility、无主段消费方（如 `Move()`）显式清理）。
-3. `UZZZDodge`：`State.PerfectDodge` → Duration GE（`GE_PerfectDodge_Status`：**0.5s 固定** + TargetTags=State.PerfectDodge，不用 SetByCaller）；删 AddLooseGameplayTag；EndAbility 兜底 `RemoveActiveEffectsWithGrantedTags(CanDashAttack)`。
+3. `UZZZDodge`：`State.PerfectDodge` → Duration GE（`GE_PerfectDodge_Status`：**0.5s 固定** + TargetTags=State.PerfectDodge，不用 SetByCaller）；删 AddLooseGameplayTag；EndAbility 兜底 RemoveLooseGameplayTag(**CanCombo**——2026-09-03 窗口统一，原 CanDashAttack)。
 4. `ZZZAttributeSet`：Staggered/Dead/Stun → 对应 GE 施加（删 Timer lambda）。
 5. `ZZZCombatEnemy`：State.Alive → `_Alive` GE。
 6. `ZZZCharacter` 起手守卫：闪避中且 `CanDashAttack` → 跳过普攻起手（交给 DashAttack/DodgeCounter 的 AbilityTriggers 路由）。
 7. 资产（用户操作）：
    - `GE_PerfectDodge_Status`；`GE_SlowMotion` Duration ≈ **1.0s**、`GE_PlayerSlowMotion` ≈ **与 CanDashAttack 窗口同步**（手感调；GE 时长走世界时间，角色膨胀不影响——2026-08-15 查证）；`GE_PlayerSlowMotion` 加 **TargetTags 组件 = `State.SlowMotion`**（反击移除定位用，规则 3 GEComponents）
    - `GA_DashAttack`（Trigger=Input.Attack + Required=CanDashAttack + **Blocked=PerfectDodge**）；`GA_DodgeCounter`（额外 Required=PerfectDodge）
-   - `AM_Dodge_Fwd/Back`：位移段 AbilityWindow(CanDashAttack) + 位移末段 SendGameplayEvent(`Event.Combat.DodgeSlowStart`，DodgeEnd notify 之前)
+   - `AM_Dodge_Fwd/Back`：位移段 AbilityWindow(**CanCombo**——2026-09-03 窗口统一，原 CanDashAttack 废弃) + 位移末段 SendGameplayEvent(`Event.Combat.DodgeSlowStart`，DodgeEnd notify 之前)
+   - `GA_DashAttack`/`GA_DodgeCounter`：AbilityTriggers=[`Event.Combat.AttackFollowUp`]（原 Input.Attack）+ Required=[`Effect.Ability.CanCombo`]（原 CanDashAttack），GA_DashCounter 额外 Required=State.PerfectDodge、GA_DashAttack Blocked=PerfectDodge
    - 三角色 DefaultAbilities 追加 GA_DashAttack/GA_DodgeCounter
    - PIE：普通闪避位移段按攻击→冲刺；完美闪避位移段按攻击→反击（慢放中）；窗口外→普攻不变
 

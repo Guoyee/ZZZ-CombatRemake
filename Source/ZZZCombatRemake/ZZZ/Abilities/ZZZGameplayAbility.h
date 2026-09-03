@@ -129,17 +129,19 @@ protected:
 	 */
 	bool PlayMontage(UAnimMontage* Montage, FName StartSection = NAME_None);
 
+	// virtual (2026-09-03): UZZZSpecialAttack overrides OnMontageCompleted to
+	// stage lead-in → body playback instead of ending on the first montage.
 	UFUNCTION()
-	void OnMontageCompleted();
+	virtual void OnMontageCompleted();
 
 	UFUNCTION()
-	void OnMontageBlendOut();
+	virtual void OnMontageBlendOut();
 
 	UFUNCTION()
-	void OnMontageInterrupted();
+	virtual void OnMontageInterrupted();
 
 	UFUNCTION()
-	void OnMontageCancelled();
+	virtual void OnMontageCancelled();
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_PlayMontageAndWait> MontageTask;

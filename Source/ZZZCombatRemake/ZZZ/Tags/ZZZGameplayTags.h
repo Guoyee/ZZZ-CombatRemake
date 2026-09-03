@@ -65,14 +65,14 @@ public:
 	FGameplayTag Event_Combat_DodgeEnd;     // "Event.Combat.DodgeEnd" (前段结束，Notify 广播)
 	FGameplayTag Event_Combat_DodgeSlowStart; // "Event.Combat.DodgeSlowStart" (玩家慢放开始——位移末段 Notify 广播，动画师摆放)
 	FGameplayTag Event_Combat_AttackEnd;    // "Event.Combat.AttackEnd" (攻击主体结束，Notify 广播；区别于 State.Combat.Recovery)
-	FGameplayTag Event_Combat_SpecialQuickEntry; // "Event.Combat.SpecialQuickEntry" (特殊技快速入口——Character 判定后随 TryActivate EventData 传入，GA 内判 StartSection)
+	FGameplayTag Event_Combat_AttackFollowUp; // "Event.Combat.AttackFollowUp" (追击请求——冲刺攻击/闪避反击触发事件；闪避位移 CanCombo 窗内按攻击时由角色门控广播，GA AbilityTriggers 配此 tag)
 
 	// === Effect ===
-	FGameplayTag Effect_Ability_CanCombo;     // "Effect.Ability.CanCombo"
+	FGameplayTag Effect_Ability_CanCombo;     // "Effect.Ability.CanCombo" (通用"可输入下一动作"窗口——普攻连段/闪避位移追击/冲刺攻击尾/特殊技入口共用, 2026-09-03 统一)
 	FGameplayTag Effect_Input_CanBuffer;      // "Effect.Input.CanBuffer"
-	FGameplayTag Effect_Ability_CanDodge;     // "Effect.Ability.CanDodge" (完美闪避窗口)
-	FGameplayTag Effect_Ability_CanParry;     // "Effect.Ability.CanParry" (弹刀窗口)
-	FGameplayTag Effect_Ability_CanDashAttack; // "Effect.Ability.CanDashAttack" (闪避位移段追击窗口——冲刺攻击/闪避反击触发)
+	FGameplayTag Effect_Ability_CanDodge;     // "Effect.Ability.CanDodge" (完美闪避窗口——已废弃)
+	FGameplayTag Effect_Ability_CanParry;     // "Effect.Ability.CanParry" (弹刀窗口——已废弃)
+	FGameplayTag Effect_Ability_CanDashAttack; // "Effect.Ability.CanDashAttack" (已废弃 2026-09-03——统一并入 Effect.Ability.CanCombo；保留注册防旧资产报错，勿用)
 	FGameplayTag Effect_Enemy_AttackWindow;   // "Effect.Enemy.AttackWindow" (敌人攻击前摇黄闪期——极限闪避 + 弹刀共用窗口)
 
 	// === SetByCaller Data ===

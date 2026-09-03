@@ -238,69 +238,41 @@ void AZZZCharacter::TryActivateSpecialAttack()
 		return;
 	}
 
-	// 忙 = 任一活动 GA 属于战斗族（类扫描，勿改 tag 枚举——GA_DashAttack 等
-	// 的资产 tag 是 BP 数据, 代码侧不可证, 漏判 = Y 顶掉进行中的技能）。
-	// 顺带记录活动普攻的 ComboIndex（快速入口判定用）。
+	// 忙 = 任一活动 GA 属于战斗族（类扫描，勿改 tag 枚举——GA_DashAttack 等的
+	// 资产 tag 是 BP 数据, 代码侧不可证, 漏判 = Y 顶掉进行中的技能）。
 	bool bBusy = false;
-	int32 ActiveComboIndex = INDEX_NONE;
 	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
 	{
-		if (!Spec.Ability || !Spec.IsActive())
-		{
-			continue;
-		}
-		if (Spec.Ability->GetClass()->IsChildOf(UZZZGameplayAbility::StaticClass()))
+		if (Spec.Ability && Spec.IsActive()
+			&& Spec.Ability->GetClass()->IsChildOf(UZZZGameplayAbility::StaticClass()))
 		{
 			bBusy = true;
-			if (Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Attack_Basic))
-			{
-				if (const UZZZGameplayAbility* ZZZAbility =
-					Cast<UZZZGameplayAbility>(Spec.Ability))
-				{
-					ActiveComboIndex = ZZZAbility->ComboIndex;
-				}
-			}
+			break;
 		}
 	}
 
-	// 窗口 = CanCombo / CanDashAttack / State.Combat.Recovery 任一在身。
+	// 窗口 = CanCombo / State.Combat.Recovery 任一在身（2026-09-03 统一后
+	// 追击窗也走 CanCombo——不再有追击专属窗口 tag）。
 	// 自由态（不忙）→ 可触发；忙但有窗口 → 可触发（连段/追击分支）；忙且无窗口
 	// → 静默拒绝（绝不打断进行中的动作, 无任何副作用）。
 	const bool bInWindow =
 		ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo)
-		|| ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanDashAttack)
 		|| ASC->HasMatchingGameplayTag(GameplayTags.State_Combat_Recovery);
 	if (bBusy && !bInWindow)
 	{
 		return;
 	}
 
-	// 快速派生: 活动普攻段位 ∈ QuickEntryComboIndexes（且窗口在身）→ 跳打击 1。
-	const bool bQuickEntry = bBusy && bInWindow
-		&& QuickEntryComboIndexes.Contains(ActiveComboIndex);
-
-	FGameplayEventData EventData;
-	EventData.Instigator = this;
-	if (bQuickEntry)
-	{
-		EventData.EventTag = GameplayTags.Event_Combat_SpecialQuickEntry;
-	}
-
-	// 定位特殊技 spec: 类过滤（UZZZSpecialAttack 子类）+ 资产 tag
-	// Ability.Attack.Special 双保险——按 handle 激活并把 EventData 直传
-	// （GA 内据此选 QuickStrike section）。
-	//
-	// 用 InternalTryActivateAbility 而非公开 TryActivateAbility: 后者不带
-	// TriggerEventData 参数; 内部版会把数据一路送进 ActivateAbility 覆写
-	// (CallActivateAbility, 单机 LocalOnly 无远程分支, 引擎源码核实)。
+	// 入口档位（免起手直连 / 起手 B / 起手 C）由 GA 自己在激活时扫描"前驱活动 GA"
+	// 的资产 tag 匹配其配置表——特殊技激活与旧 GA 结束同帧、且旧 GA 更晚才结束，
+	// 所以这里无需传任何上下文（详见 UZZZSpecialAttack 类注释）。
 	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
 	{
 		if (Spec.Ability
 			&& Spec.Ability->GetClass()->IsChildOf(UZZZSpecialAttack::StaticClass())
 			&& Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Attack_Special))
 		{
-			ASC->InternalTryActivateAbility(
-				Spec.Handle, FPredictionKey(), nullptr, nullptr, &EventData);
+			ASC->TryActivateAbility(Spec.Handle, /*bAllowRemoteActivation=*/true);
 			return;
 		}
 	}
@@ -322,26 +294,28 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 	FGameplayEventData EventData;
 	EventData.Instigator = this;
 
-	// Dash-attack / dodge-counter routing (2026-08-09): while a dodge's
-	// displacement window is open (Effect.Ability.CanDashAttack — a notify
-	// window tag, layer A), the attack input belongs to GA_DashAttack /
-	// GA_DodgeCounter — their AbilityTriggers (Input.Attack) + Required /
-	// Blocked tags route it (dodge-counter needs State.PerfectDodge, dash-
-	// attack is blocked by it).
+	// Dash-attack / dodge-counter routing (2026-09-03, window unified): the
+	// dodge's displacement window now grants the generic CanCombo tag (same
+	// AbilityWindow notify, layer A) — "可以输入下一动作"不再有追击专属 tag。
+	// While a dodge is active inside that window, the attack input is routed
+	// through the dedicated Event.Combat.AttackFollowUp event instead of
+	// Input.Attack — GA_DashAttack / GA_DodgeCounter trigger on THAT tag
+	// (+ Required=CanCombo / PerfectDodge) so a generic Input.Attack broadcast
+	// can never fire them from a basic-combo window.
 	//
-	// The gate MUST be evaluated BEFORE HandleGameplayEvent (2026-08-11
-	// regression fix): activating the dash attack starts its montage, which
-	// interrupts the dodge montage → the dodge ability ends and
-	// UZZZDodge::EndAbility removes the CanDashAttack window tag (fallback
+	// The gate MUST be evaluated BEFORE the generic HandleGameplayEvent
+	// (2026-08-11 regression fix, carried over): activating the dash attack
+	// starts its montage, which interrupts the dodge montage → the dodge
+	// ability ends and UZZZDodge::EndAbility removes the window tag (fallback
 	// cleanup). Checked afterwards, the gate sees a dead window, the
 	// basic-attack starter fires on top of the dash attack, and its montage
 	// supersedes the dash attack's — the player saw GA_BasicAttack_01 instead
 	// of the dash attack.
 	if (InputTag == GameplayTags.Input_Attack
 		&& IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Dodge)
-		&& ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanDashAttack))
+		&& ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo))
 	{
-		ASC->HandleGameplayEvent(InputTag, &EventData);
+		ASC->HandleGameplayEvent(GameplayTags.Event_Combat_AttackFollowUp, &EventData);
 		return;
 	}
 

@@ -75,9 +75,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FString("Player slow-motion start — notify on the dodge montage's displacement tail (animator-placed)"));
 	GameplayTagsSingleton.Event_Combat_AttackEnd = Manager.AddNativeGameplayTag(
 		FName("Event.Combat.AttackEnd"), FString("Attack action section ended — ability may end, montage recovery continues"));
-	GameplayTagsSingleton.Event_Combat_SpecialQuickEntry = Manager.AddNativeGameplayTag(
-		FName("Event.Combat.SpecialQuickEntry"),
-		FString("Special quick-strike entry — rides the TryActivate EventData from the character gate; GA jumps to the QuickStrike section"));
+	GameplayTagsSingleton.Event_Combat_AttackFollowUp = Manager.AddNativeGameplayTag(
+		FName("Event.Combat.AttackFollowUp"),
+		FString("Follow-up request (2026-09-03) — broadcast by the character gate when attack input lands inside a dodge's CanCombo displacement window; GA_DashAttack / GA_DodgeCounter trigger on this tag instead of Input.Attack"));
 
 	// === Ability (parent tag — children registered above) ===
 	GameplayTagsSingleton.Ability_Attack_Basic = Manager.AddNativeGameplayTag(
@@ -105,9 +105,14 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FName("Effect.Ability.CanDodge"), FString("Perfect dodge window"));
 	GameplayTagsSingleton.Effect_Ability_CanParry = Manager.AddNativeGameplayTag(
 		FName("Effect.Ability.CanParry"), FString("Parry window"));
+	// Effect.Ability.CanDashAttack: DEPRECATED 2026-09-03 — unified into
+	// Effect.Ability.CanCombo (every attack-family window now grants CanCombo).
+	// Kept registered so pre-existing assets (dodge montage AbilityWindow
+	// instances, GA_DashAttack/Counter Required tags) keep loading until the
+	// asset-side swap. Do NOT use in new code.
 	GameplayTagsSingleton.Effect_Ability_CanDashAttack = Manager.AddNativeGameplayTag(
 		FName("Effect.Ability.CanDashAttack"),
-		FString("Dodge displacement window — attack pressed here triggers dash attack / dodge counter"));
+		FString("DEPRECATED 2026-09-03 — unified into Effect.Ability.CanCombo; kept registered for old assets"));
 	GameplayTagsSingleton.Effect_Enemy_AttackWindow = Manager.AddNativeGameplayTag(
 		FName("Effect.Enemy.AttackWindow"),
 		FString("Enemy attack wind-up (yellow-flash synced) — perfect dodge + parry window"));

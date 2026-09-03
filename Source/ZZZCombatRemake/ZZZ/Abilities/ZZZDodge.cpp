@@ -216,14 +216,15 @@ void UZZZDodge::EndAbility(
 	}
 
 	// Window-tag fallback (CLAUDE.md rule 1 layer A): the displacement window
-	// (Effect.Ability.CanDashAttack, granted by an AbilityWindow notify state on
-	// the dodge montage) must not survive the dodge — e.g. the dodge was
+	// (Effect.Ability.CanCombo — 2026-09-03 统一后 dodge 蒙太奇挂通用 CanCombo,
+	// 替代原 CanDashAttack) must not survive the dodge — e.g. the dodge was
 	// interrupted by a dash attack before NotifyEnd ran. A stale window would
-	// wrongly route a LATER attack input into GA_DashAttack / GA_DodgeCounter.
-	// Removal of a not-granted tag is a no-op — safe unconditionally.
+	// wrongly route a LATER attack input into GA_DashAttack / GA_DodgeCounter
+	// (or admit a special attack out of a dead dodge). Removal of a not-granted
+	// tag is a no-op — safe unconditionally.
 	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
 	{
-		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Ability_CanDashAttack);
+		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Ability_CanCombo);
 	}
 
 	// State.Invulnerable needs no manual removal — ActivationOwnedTags.
