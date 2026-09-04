@@ -1,13 +1,13 @@
 # 相机架构定稿 — Gameplay Cameras Manager 模式 + 切人过渡 / 特写预留
 
-> **项目**: ZZZCombatRemake (UE 5.8) · 定稿 2026-09-02
-> **状态**: ✅ 切人平滑过渡已落地（manager 模式，PIE 验证通过）；特写/输入屏蔽为预留
+> **项目**: ZZZCombatRemake (UE 5.8) · 定稿 2026-09-02 · 更新 2026-09-04
+> **状态**: ✅ 切人平滑过渡已落地（manager 模式）；✅ 俯仰限幅落地（自定义子类 AZZZPlayerCameraManager，见 §八）；特写/输入屏蔽为预留
 > **依据**: UE 5.8 引擎源码 `Engine/Plugins/Cameras/GameplayCameras/`（逐行查证，非文档记忆）；参考方案（PlayerCameraManager 调度 + CineCamera/Sequence + CameraModifier）已在 5.8 语境下逐条修正
 
 ## 一、已确认决策
 
 1. **插件**：Gameplay Cameras（引擎自带，`Engine/Plugins/Cameras/GameplayCameras/`，模块名 `GameplayCameras`）。
-2. **运行模式：manager 模式（2026-09-02 定稿，推翻 08-31 的 standalone 初案）**：PC 构造函数设 `PlayerCameraManagerClass = AGameplayCamerasPlayerCameraManager`，组件 `bRunStandaloneCameraSystem = false`。
+2. **运行模式：manager 模式（2026-09-02 定稿，推翻 08-31 的 standalone 初案）**：PC 构造函数设 `PlayerCameraManagerClass = AZZZPlayerCameraManager`（GameplayCameras manager 的自定义子类，2026-09-04 起带俯仰限幅，见 §八），组件 `bRunStandaloneCameraSystem = false`。
    - **推翻原因（实测）**：standalone 模式下每个角色组件跑**独立 camera system**，切人 = 换整个 system → blend 栈不存在 → 跨角色位置必瞬移，EnterTransitions 无机会执行。
    - manager 模式 = **单一 camera system**（manager 宿主）+ evaluation context 栈：切人时把目标成员 context 压栈 → 栈保留旧角色最后相机状态 → `EnterTransitions` 跨角色 blend 生效。
 3. **切人过渡机制**：`OnPossess` → context 未激活时 `ActivateGameplayCamera(CameraComp, Push)` 压栈 → view target 随 `OnContextStackChanged` 自动同步 → `CA_PlayerCameras` 的 **`EnterTransitions`**（`UEasingBlendCameraNode`，0.25s HermiteCubicInOut，资产内配置）从旧角色最后一帧插值到新角色。
@@ -24,7 +24,7 @@
 
 ```
 控制层  ZZZPlayerController（调度，C++）
-         ├─ 构造: PlayerCameraManagerClass = AGameplayCamerasPlayerCameraManager
+         ├─ 构造: PlayerCameraManagerClass = AZZZPlayerCameraManager（俯仰限幅子类）
          ├─ OnPossess（唯一入口, 覆盖初始 Possess + 每次切人）:
          │    GetEvaluationContext() 未激活 → manager->ActivateGameplayCamera(Push)
          │    （已激活 = 切回成员 → 跳过, 由 AutoManage→SetViewTarget 移顶, silent）
@@ -59,7 +59,8 @@
 ### C++ 改动清单（全部已落地）
 
 - `ZZZCombatRemake.Build.cs`：`PublicDependencyModuleNames` + `"GameplayCameras"`
-- `ZZZPlayerController` 构造函数：`PlayerCameraManagerClass = AGameplayCamerasPlayerCameraManager::StaticClass()`
+- `ZZZ/Player/ZZZPlayerCameraManager`（新增 2026-09-04）：`AGameplayCamerasPlayerCameraManager` 自定义子类，构造内 `ViewPitchMin=-60 / ViewPitchMax=30`（俯仰限幅，见 §八）
+- `ZZZPlayerController` 构造函数：`PlayerCameraManagerClass = AZZZPlayerCameraManager::StaticClass()`（OnPossess 内 Cast 仍用基类 `AGameplayCamerasPlayerCameraManager`，子类 IS-A 兼容）
 - `ZZZPlayerController::OnPossess` override：幂等激活当前角色相机（见上）
 - `SwitchToNextCharacter`：`SetActorLocationAndRotation`（继承旧角色位置+朝向）+ 保存/恢复 ControlRotation；相机激活不再在此处（OnPossess 统一）
 - `ZZZCharacter` / `ZZZCombatEnemy` 构造：capsule + mesh 对 `ECC_Camera` Ignore
@@ -100,8 +101,24 @@
 ## 七、关键文件
 
 - `ZZZ/Player/ZZZPlayerController`（构造函数 manager 指定 + `OnPossess` 幂等激活 + `SwitchToNextCharacter`）
+- `ZZZ/Player/ZZZPlayerCameraManager`（2026-09-04 新增，俯仰限幅，见 §八）
 - `ZZZ/ZZZCharacter` / `ZZZ/Enemies/ZZZCombatEnemy`（胶囊/mesh 对 ECC_Camera Ignore）
 - `ZZZCombatRemake.Build.cs`（`GameplayCameras` 依赖）
 - `/Game/ZZZ/Camera/`：`CA_PlayerCameras`（asset + EnterTransitions）、`CR_ThirdPerson`（主 rig）、`CDE_PlayerCamera`（director BP）、`CR_Closeup_*`（特写 rig，后续）
 - 角色 BP：`/Game/ZZZ/character/BP_Okuma`、`BP_Jane`（GameplayCameraComponent：standalone=false，已配）
 - 表现层：`ZZZ/Cues/GC_ZZZ_CameraShake`（不动）
+
+## 八、玩家俯仰限幅（自定义子类，2026-09-04 落地）
+
+**需求**：相机俯仰包络 [-60°, +30°]（经典 ViewPitchMin/Max 写法，向下/向上）。
+
+**实现**：新增 `ZZZ/Player/ZZZPlayerCameraManager` —— `AGameplayCamerasPlayerCameraManager` 自定义子类（引擎类 `UCLASS(notplaceable, MinimalAPI)`，构造函数单独导出，C++ 继承完全支持），构造内设 `ViewPitchMin = -60.0f` / `ViewPitchMax = 30.0f`；PC 构造函数 `PlayerCameraManagerClass` 指向子类（旧行 `Cast<AGameplayCamerasPlayerCameraManager>` 不变，子类 IS-A 兼容）。BP 资产零改动。
+
+**5.8 生效点（引擎源码逐行核实，勿按旧管线认知改动）**：
+
+1. `ViewPitchMin/Max` 的唯一按帧消费点 = `APlayerCameraManager::ProcessViewRotation → LimitViewPitch`（钳 ControlRotation）；调用链 `APlayerController::UpdateRotation` 每帧：取 ControlRotation → ProcessViewRotation → SetControlRotation。
+2. GameplayCameras manager 的 `DoUpdateCamera` **刻意不调 Super**（rig 输出 `GetEvaluatedCameraView` → ApplyCameraModifiers → FillCameraCache），旧 `UpdateViewTarget` 的整条 POV 处理/限幅已不存在 → **限的是 ControlRotation，不是 rig 输出 POV**。
+3. 本项目 CR_ThirdPerson 旋转恒 = ControlRotation（BoomArm 无输入槽 → 引擎自动接 Driven Control Rotation 节点；该节点写回前同样读 manager 的 `ViewPitch*` 限值，`FDrivenControlRotationCameraNodeEvaluator::LimitControlRotation`）→ 钳 ControlRotation = 钳最终相机俯仰，等效成立。
+4. 边界：rig 内自累积旋转节点（orbit 自加输入）与跨限位长 blend 的输出不经任何限幅——若未来引入此类节点，改在 rig 图内钳制，本子类不再兜底。VR 头显（IsHeadTrackingAllowed）时引擎跳过限幅。
+
+**语义**：限幅作用于 ControlRotation → 相机与瞄准（FaceRotation/aim）共用同一俯仰包络——相机=瞄准为本作既有定稿，属预期。

@@ -16,6 +16,7 @@
 #include "ZZZCombatRemake.h"
 #include "ZZZDamageNumberPool.h"
 #include "ZZZDamageNumberWidget.h"
+#include "ZZZPlayerCameraManager.h"
 
 AZZZPlayerController::AZZZPlayerController(const FObjectInitializer& ObjectInit)
 	: Super(ObjectInit)
@@ -25,7 +26,10 @@ AZZZPlayerController::AZZZPlayerController(const FObjectInitializer& ObjectInit)
 	// through CA_PlayerCameras' EnterTransitions. Per-pawn standalone systems
 	// (bRunStandaloneCameraSystem=true) cannot blend across characters — each
 	// has its own evaluation stack, so switching = camera cut.
-	PlayerCameraManagerClass = AGameplayCamerasPlayerCameraManager::StaticClass();
+	// Custom subclass AZZZPlayerCameraManager (2026-09-04): carries the pitch
+	// clamp (ViewPitchMin/Max) — the only legacy-camera property still honored
+	// by this pipeline, applied to ControlRotation each PC tick (see class doc).
+	PlayerCameraManagerClass = AZZZPlayerCameraManager::StaticClass();
 }
 
 void AZZZPlayerController::OnPossess(APawn* InPawn)
