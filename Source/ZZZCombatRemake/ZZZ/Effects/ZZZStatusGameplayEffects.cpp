@@ -20,7 +20,11 @@ UZZZGameplayEffect_Dead::UZZZGameplayEffect_Dead()
 UZZZGameplayEffect_Stun::UZZZGameplayEffect_Stun()
 {
 	// No tag configuration on the CDO on purpose — see header comment.
-	DurationPolicy = EGameplayEffectDurationType::Infinite;
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	// 失衡时长 (2026-09-05): 原 Infinite 无解除路径 → Daze 满后永久眩晕、敌人永不
+	// 恢复行动。改 Duration 自过期: 到期 State.Stun 随 GE 移除 (C 层 GE 管理, 同
+	// _Stagger 模式), 敌人恢复; 5.0s 默认, BP 子类可覆写 (Phase 5 连携窗口细化时再按怪种调)。
+	DurationMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(5.0f));
 }
 
 UZZZGameplayEffect_Alive::UZZZGameplayEffect_Alive()
@@ -73,5 +77,22 @@ UZZZGameplayEffect_SlowMotion::UZZZGameplayEffect_SlowMotion()
 	Modifier.Attribute = UZZZAttributeSet::GetTimeDilationAttribute();
 	Modifier.ModifierOp = EGameplayModOp::Override;
 	Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(0.15f));
+	Modifiers.Add(Modifier);
+}
+
+UZZZGameplayEffect_ParryStop::UZZZGameplayEffect_ParryStop()
+{
+	// Duration is WORLD time (same mechanics as _HitStop above): 0.2f = 0.2s
+	// real freeze at the parry impact frame.
+	DurationPolicy = EGameplayEffectDurationType::HasDuration;
+	DurationMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(0.2f));
+
+	// 0.01: pins the actor mid-pose (the montage / blend-out crawls through the
+	// freeze, so the enemy stays frozen at its strike frame). On expiry the
+	// aggregator recomputes TimeDilation and the bridge restores 1.0.
+	FGameplayModifierInfo Modifier;
+	Modifier.Attribute = UZZZAttributeSet::GetTimeDilationAttribute();
+	Modifier.ModifierOp = EGameplayModOp::Override;
+	Modifier.ModifierMagnitude = FGameplayEffectModifierMagnitude(FScalableFloat(0.01f));
 	Modifiers.Add(Modifier);
 }

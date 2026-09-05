@@ -29,7 +29,10 @@
  *
  * Type → intended use:
  *   _Stagger  (Duration 0.35s): hit-stagger — self-expiring, no timer needed.
- *   _Dead / _Stun / _Alive (Infinite): persistent life-cycle markers.
+ *   _Dead / _Alive (Infinite): persistent life-cycle markers.
+ *   _Stun  (Duration 5.0s, 2026-09-05): daze-full 失衡 — self-expiring so a
+ *     stunned enemy recovers and can fight again. Was Infinite: no removal path
+ *     anywhere → permanent stun once daze capped (live-repro'd bug).
  *   _HitStop  (Duration 0.03s): hit-stop freeze — TimeDilation override, the
  *     TimeDilation bridge mirrors it to CustomTimeDilation (see class comment).
  *   _SlowMotion (Duration 1.0s): perfect-dodge enemy slow — TimeDilation
@@ -142,4 +145,24 @@ class UZZZGameplayEffect_SlowMotion : public UGameplayEffect
 
 public:
 	UZZZGameplayEffect_SlowMotion();
+};
+
+/**
+ * Parry freeze (招架定格, 2026-09-04) — NOT a tag carrier: a Duration GE
+ * overriding TimeDilation to 0.01 (same mechanics as _HitStop), ~0.2s real
+ * stop at the parry impact frame.
+ *
+ * Applied to the ENEMY by UZZZAnimNotify_EnemyParryImpact::FreezeEffect and to
+ * the parrying character by UZZZAssistDefensive::FreezeEffect — both sides
+ * freeze at the enemy's strike frame (same-frame, each via its own
+ * TimeDilation bridge). Default for both slots; override with a BP child per
+ * side to retune duration / dilation independently.
+ */
+UCLASS()
+class UZZZGameplayEffect_ParryStop : public UGameplayEffect
+{
+	GENERATED_BODY()
+
+public:
+	UZZZGameplayEffect_ParryStop();
 };

@@ -209,17 +209,18 @@ void UZZZAttributeSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 	{
 		SetDaze(FMath::Clamp(GetDaze(), 0.0f, GetMaxDaze()));
 
-		if (GetDaze() >= GetMaxDaze() && !bIsStunned)
+		// 失衡判据 = GE 管理的 State.Stun tag (2026-09-05): _Stun 已改 Duration 自
+		// 过期 (5.0s) —— tag 在场 = 失衡中 (不重复触发), 到期随 GE 移除 → 可再次失衡。
+		// 替代 bIsStunned bool: bool 无法感知 GE 过期, 会导致恢复后无法再次失衡。
+		if (TargetASC
+			&& GetDaze() >= GetMaxDaze()
+			&& !TargetASC->HasMatchingGameplayTag(FZZZGameplayTags::Get().State_Stun))
 		{
-			bIsStunned = true;
 			SetDaze(0.0f);  // Reset buildup
 
-			if (TargetASC)
-			{
-				// Layer C: State.Stun via an Infinite GE (no LooseTag).
-				ApplyStatusEffect(TargetASC, UZZZGameplayEffect_Stun::StaticClass(),
-					FZZZGameplayTags::Get().State_Stun);
-			}
+			// Layer C: State.Stun via a self-expiring Duration GE (no LooseTag).
+			ApplyStatusEffect(TargetASC, UZZZGameplayEffect_Stun::StaticClass(),
+				FZZZGameplayTags::Get().State_Stun);
 
 			if (SourceASC)
 			{

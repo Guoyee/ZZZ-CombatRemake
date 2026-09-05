@@ -118,7 +118,8 @@ public:
 	virtual void PostGameplayEffectExecute(const FGameplayEffectModCallbackData& Data) override;
 
 private:
-	// Prevent repeated event broadcasting (single-player only — no replication needed)
+	// Prevent repeated event broadcasting (single-player only — no replication needed).
+	// bIsDead: death is permanent. Stun dedupe is TAG-based (State.Stun GE presence)
+	// since 2026-09-05 — the _Stun GE self-expires, a bool can't track its expiry.
 	bool bIsDead = false;
-	bool bIsStunned = false;
 };
