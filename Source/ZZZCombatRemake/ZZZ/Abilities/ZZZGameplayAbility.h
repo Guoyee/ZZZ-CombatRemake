@@ -9,6 +9,7 @@
 class UAnimMontage;
 class UAbilityTask_PlayMontageAndWait;
 class UAbilityTask_WaitCombo;
+class UAbilityTask_WaitInputBuffer;
 class UZZZBasicAttack;
 class AZZZCombatEnemy;
 
@@ -159,18 +160,29 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_PlayMontageAndWait> MontageTask;
 
-	// === Optional combo handoff (opt-in chain support) ===
+	// === Two-window input support (input buffer + combo handoff, 2026-09-05) ===
 
 	/**
-	 * Spawns a WaitCombo task on the CanCombo window (2026-08-29, moved up from
-	 * UZZZBasicAttack so any attack-family subclass can opt in with one call).
-	 * A combo-window attack input triggers OnComboHandoffTriggered — the next
-	 * ability activates, then this one ends (transition order matters: Next
-	 * first, BlendIn overlaps the recovery, no gap frame). Spawned even on
-	 * terminal hits (NextComboAbility null) — the task's window-close branch
-	 * is the combo system's stale-buffer flush (WaitCombo.cpp), so callers
-	 * with recovery windows should call this unconditionally (BasicAttack
-	 * does); callers without windows may gate on NextComboAbility.
+	 * Arms the ability's TWO default input windows in one call — the base
+	 * standard for every montage-driven combat ability (2026-09-05 原则:
+	 * 技能默认支持 inputbuffer + combo):
+	 *   1. UAbilityTask_WaitInputBuffer — while the montage grants
+	 *      Effect.Input.CanBuffer (InputWindow notify, the pre-input dead
+	 *      zone), an attack press is written to the PC's shared buffer
+	 *      (last-press-wins) instead of being dropped.
+	 *   2. WaitCombo on the Effect.Ability.CanCombo window — when the window
+	 *      opens it consumes the buffered attack (预按) or registers for a
+	 *      live press, then fires OnComboHandoffTriggered: the next ability
+	 *      activates FIRST, then this one ends (transition order matters —
+	 *      Next's BlendIn overlaps the recovery, no gap frame).
+	 * Both tasks are inert without their notify windows on the montage, so
+	 * arming unconditionally is safe; montages opt into buffering by placing
+	 * an InputWindow(CanBuffer) before their AbilityWindow(CanCombo) (the
+	 * two-window convention). WaitCombo is spawned even on terminal hits
+	 * (NextComboAbility null) — its window-close branch is the combo system's
+	 * stale-buffer flush (WaitCombo.cpp), so callers with recovery windows
+	 * call this unconditionally (BasicAttack / Dodge / AssistDefensive do);
+	 * callers without windows may gate on NextComboAbility.
 	 */
 	void TrySetupComboHandoff();
 
@@ -179,4 +191,8 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_WaitCombo> ComboHandoffTask;
+
+	/** 死区预按任务（CanBuffer 窗内按键 → PC 缓冲）——TrySetupComboHandoff 一并武装。 */
+	UPROPERTY()
+	TObjectPtr<UAbilityTask_WaitInputBuffer> InputBufferTask;
 };

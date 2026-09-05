@@ -314,27 +314,40 @@ void AZZZCharacter::Input_AbilityInputTagPressed(FGameplayTag InputTag)
 	FGameplayEventData EventData;
 	EventData.Instigator = this;
 
-	// Follow-up-strike routing (2026-09-03, 追击技 = 闪避的连段段): the dodge's
-	// displacement window grants the generic CanCombo tag (same AbilityWindow
-	// notify as basic segments — CanDashAttack retired). An attack input inside
-	// it belongs to the dodge's OWN combo handoff (UZZZDodge arms
+	// Follow-up-strike routing (2026-09-03, 追击技 = 连段段; 2026-09-04 招架并入):
+	// the dodge's displacement window / the parry montage's recover tail grant
+	// the generic CanCombo tag (same AbilityWindow notify as basic segments —
+	// CanDashAttack retired). An attack input inside it belongs to the active
+	// GA's OWN combo handoff (UZZZDodge / UZZZAssistDefensive arm
 	// TrySetupComboHandoff; WaitCombo consumes the Input.Attack broadcast below
-	// and activates the dash attack / dodge counter). This gate therefore ONLY
-	// skips the basic-attack starter — no event rewriting, no AbilityTriggers
-	// on the follow-up abilities (they are pure handoff targets, like basic
-	// segments).
+	// and activates the dash attack / dodge counter / 支援突击). This gate
+	// therefore ONLY skips the basic-attack starter — no event rewriting, no
+	// AbilityTriggers on the follow-up abilities (they are pure handoff
+	// targets, like basic segments).
 	//
 	// The gate MUST be evaluated BEFORE the generic HandleGameplayEvent
-	// (2026-08-11 regression fix, carried over): activating the dash attack
-	// starts its montage, which interrupts the dodge montage → the dodge
-	// ability ends and UZZZDodge::EndAbility removes the window tag (fallback
-	// cleanup). Checked afterwards, the gate sees a dead window, the
-	// basic-attack starter fires on top of the dash attack, and its montage
-	// supersedes the dash attack's — the player saw GA_BasicAttack_01 instead
-	// of the dash attack.
+	// (2026-08-11 regression fix, carried over): activating the follow-up
+	// starts its montage, which interrupts the dodge/parry montage → the GA
+	// ends and its EndAbility removes the window tag (fallback cleanup).
+	// Checked afterwards, the gate sees a dead window, the basic-attack
+	// starter fires on top of the follow-up, and its montage supersedes the
+	// follow-up's — the player saw GA_BasicAttack_01 instead of the follow-up.
 	if (InputTag == GameplayTags.Input_Attack
-		&& IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Dodge)
+		&& (IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Dodge)
+			|| IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Assist))
 		&& ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo))
+	{
+		ASC->HandleGameplayEvent(InputTag, &EventData);
+		return;
+	}
+
+	// 招架期禁普攻起手 (2026-09-04): 招架 GA 活动但 CanCombo 窗未开（架势段/定格/
+	// 收势前段）→ 攻击输入吞掉（广播喂 WaitInputBuffer/WaitCombo——窗关时它们不动作;
+	// CanBuffer 死区在身时按键由此入 PC 缓冲, 开窗即消费）。若不拦, 普攻起手会打断
+	// 招架蒙太奇、招架演出中途变成普攻; 收势尾窗由上方 CanCombo 分支接管。
+	if (InputTag == GameplayTags.Input_Attack
+		&& IsAbilityActiveWithTag(GameplayTags.Ability_Defense_Assist)
+		&& !ASC->HasMatchingGameplayTag(GameplayTags.Effect_Ability_CanCombo))
 	{
 		ASC->HandleGameplayEvent(InputTag, &EventData);
 		return;
@@ -725,7 +738,7 @@ void AZZZCharacter::FinalizeSwitchOut()
 	OnSwitchOutCompleted.Broadcast(this);
 }
 
-void AZZZCharacter::BeginSwitchIn()
+void AZZZCharacter::BeginSwitchIn(bool bPlayEnterMontage)
 {
 	bSwitchingOut = false;
 	SwitchOutPhase = ESwitchOutPhase::None;
@@ -743,8 +756,10 @@ void AZZZCharacter::BeginSwitchIn()
 	GetWorldTimerManager().SetTimer(SwitchInvulnTimerHandle,
 		this, &AZZZCharacter::ClearSwitchInvulnerability, 1.0f, false);
 
-	// 进场动画 play-and-forget（被玩家攻击蒙太奇覆盖属正常）
-	if (EnterMontage && GetMesh() && GetMesh()->GetAnimInstance())
+	// 进场动画 play-and-forget（被玩家攻击蒙太奇覆盖属正常）。
+	// 招架入场 (2026-09-04) 不播 EnterMontage —— 入场演出 = 招架 GA 的招架蒙太奇
+	//（按键瞬间由 PC 激活, 起手即招架姿势）。
+	if (bPlayEnterMontage && EnterMontage && GetMesh() && GetMesh()->GetAnimInstance())
 	{
 		GetMesh()->GetAnimInstance()->Montage_Play(EnterMontage, 1.0f);
 	}

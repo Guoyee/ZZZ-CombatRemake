@@ -61,8 +61,12 @@ public:
 	 */
 	void StartSwitchOut();
 
-	/** PC 调用：复位材质透明度 → 显示 → 开碰撞 → 播进场动画（可空）。 */
-	void BeginSwitchIn();
+	/**
+	 * PC 调用：复位材质透明度 → 显示 → 开碰撞 → 播进场动画（可空）。
+	 * @param bPlayEnterMontage 招架入场(false, 2026-09-04)不播 EnterMontage——
+	 *   入场演出由招架 GA 的招架蒙太奇承担（B 按键瞬间激活）。
+	 */
+	void BeginSwitchIn(bool bPlayEnterMontage = true);
 
 	/** 退场状态中为 true——UZZZBasicAttack / WaitCombo 据此抑制旧角色的连段与缓冲消费。 */
 	bool IsSwitchingOut() const { return bSwitchingOut; }

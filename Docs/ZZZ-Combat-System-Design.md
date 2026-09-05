@@ -12,12 +12,12 @@
 | 基础攻击连段 | 3-5 段普攻，预输入缓冲 | ✅ Phase 2（4 段） |
 | 特殊攻击 EX | 普通/强化特殊技（Y；能量 ≥ 消耗触发强化版）+ 能量系统 | ✅ 2026-09-03（C++ ✅；资产待做） |
 | 闪避 / 完美闪避 | 极限时机触发时空断裂 | 🔄 Phase 3 |
-| 弹刀 / 突击支援 | 防御/进攻型角色切换 | 🔄 Phase 3 |
+| 招架支援 / 快速支援 | 防御型角色切换（空格，敌人黄闪内） | ✅ 招架支援 2026-09-05；快速支援 ⬜（被击飞/技能窗，接口预留） |
 | 终结技 | 消耗全队共享 Decibel | ⬜ Phase 5 |
 | 连携技 Chain Attack | 打空 Daze 后多人连携 | ⬜ Phase 5 |
 | 元素 / 异常 | Fire/Ice/Electric/Physical/Ether + 积蓄爆发 | ⬜ Phase 4 |
 | Daze 失衡 | 攻击积累架势伤害，满后失衡 | ✅ 数值（连携 ⬜ Phase 5） |
-| 三人编队切换 | 持久化成员 + 异步退场状态机（等 GA 结束→退场动画→材质淡出→隐藏）| 🔄 普通切换已实现；弹刀/突击自动判定 ⬜ |
+| 三人编队切换 | 持久化成员 + 异步退场状态机（等 GA 结束→退场动画→材质淡出→隐藏）| ✅ 普通切换 2026-09-02；招架自动判定 2026-09-05 |
 | 敌人 AI | 以骸行为 | ⬜ Phase 6（最小攻击已实现） |
 
 ## 二、核心架构决策
@@ -180,7 +180,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - **慢动作发放（2026-09-03 定稿——起点在打空后，非按下时）**：完美闪避按下只给敌人挂 **`Effect.Enemy.Dodged`**（A 层 LooseTag，双轨：授予=闪避判定，消费=敌人蒙太奇 notify，兜底=攻击 GA EndAbility 清理）。敌人攻击蒙太奇**伤害帧之后**摆 `UZZZAnimNotify_EnemyDodgeSlow`：消费 tag → 敌人自施 `UZZZGameplayEffect_SlowMotion`（C++ 载体，Duration 1.0s 世界时间 + TimeDilation 0.15；notify 槽可覆写 GE_SlowMotion BP）——**攻击先正常挥出、落空后才起慢动作**。玩家慢放（GE_PlayerSlowMotion 0.5）仍由玩家蒙太奇位移末段 DodgeSlowStart notify 驱动。**不震屏**——慢放本身就是奖励（2026-08-16）。
 - 冲刺攻击/闪避反击（✅ 珂蕾妲资产完成、流程跑通，2026-09-02；**2026-09-03 重构为连段段**）：`State.PerfectDodge` 改 Duration GE（GE_PerfectDodge_Status，0.5s）；两者同为 `UZZZFollowUpAttack`（见 §3.2）的 BP 子类，由 `UZZZDodge` 的追击双槽（`DashFollowUpAbility`/`PerfectFollowUpAbility`，GA_Dodge BP 配置）经基类组合交接手递手激活——**无 AbilityTriggers**；闪避位移窗 notify 挂通用 CanCombo（原 CanDashAttack 废弃），追击分支按闪避按下时的完美判定（`GetComboNext()` 覆写）。⚠ 起手守卫（闪避中且 CanCombo 窗 → 广播 Input.Attack 并跳过普攻起手）**必须在 `HandleGameplayEvent` 之前判定**：追击技激活即打断闪避蒙太奇 → 闪避 EndAbility 移除窗口 tag（兜底清理，现删 CanCombo），事后判定会看到死窗口而误放普攻覆盖追击段（2026-08-11 修复，语义保留）。
 
-### 4.9 弹刀 / 突击 / 编队切换（普通切换 ✅ 2026-09-02 落地；弹刀/突击待做）
+### 4.9 招架支援 / 快速支援 / 编队切换（普通切换 ✅ 2026-09-02；招架支援 ✅ 2026-09-05；快速支援 ⬜ 接口预留）
 
 #### 4.9.1 普通切换（手动切人）——已实现
 
@@ -200,14 +200,21 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - **配置槽位**：角色 BP `ZZZ|Switch`（`EnterMontage` / `ExitMontage` / `RunningExitMontage` / `FadeParameterName`=Opacity / `FadeDuration` / `SwitchWaitAbilityTags`）；PC 资产 `ZZZ|Squad`（`SquadClasses` / `SwitchInOffset` / `SwitchInRightOffset`）。
 - **降级路径**：无退场动画 → 直接淡出；材质无淡出参数/非 Masked → 淡出无视觉效果但时序照常（FadeDuration 后隐藏）。
 
-#### 4.9.2 弹刀 / 突击（Phase 3 待做，2026-08-09 设计定稿）
+#### 4.9.2 招架支援（✅ 2026-09-05 定稿并落地；原"弹刀/突击"设计作废）
 
-- 切换键自动判定（状态优先级语义）：`FindNearestEnemy(300, Effect.Enemy.AttackWindow)` → 弹刀；`FindNearestEnemy(600, State.Staggered)` → 突击；否则普通切换。弹刀窗口与极限闪避共用 `Effect.Enemy.AttackWindow`（黄闪同步段）；攻击已出手/收招段切人 = 普通切换。
-- **弹刀原型取舍**：无精防判定窗口、无资源消耗（可零成本反复触发）——精防与支援点经济推迟 Phase 5。交付"无条件格挡换人 + 敌人硬直惩罚"。
-- `UZZZAssistDefensive`：ActivationOwnedTags=State.Invulnerable（入场全程）→ Cancel 敌人攻击（`Ability.Attack.Enemy`）→ 移除 AttackWindow 兜底 → 敌人挂 `State.Staggered`（UZZZGameplayEffect_Stagger，Duration 0.35s）→ 入场蒙太奇（前段 CanParry + 中后段 AttackTrace 反击）。
-- `UZZZAssistOffensive`：入场前段小无敌（AbilityWindow=State.Invulnerable，非全程）+ RotateToTarget + 命中。
-- **旧人物下台统一复用 §4.9.1 的退场状态机**（`StartSwitchOut`：等当前 GA 结束 → 退场动画 → 淡出 → 隐藏）；入场方播 Assist **专属**动画（各自 GA 的 `AttackMontage` 槽位），与手动切换的 `EnterMontage` 互不共享（弹刀/连携是独立演出资产，2026-09-02 确认）。能力激活失败（Commit 不过/tag 阻塞）回落普通切换表现。
-- 成员持久化（隐藏/禁碰撞/不销毁），ASC 继续 Tick；切换不 Cancel 旧能力。
+**2026-09-04/05 重新定义**（测试原版后推翻旧 §4.9.2）：支援技统一由切换键（空格）自动判定，按场景分流为：
+1. **招架支援（本次落地）**——敌 AttackWindow（黄闪）内按空格；
+2. **快速支援（⬜ 预留，本阶段不做）**——被击飞（UI 提示）或当前角色特定技能开窗 → 同一窗口 tag（如 `Effect.Player.QuickAssistWindow`）驱动，PC 判定链预留扩展口；
+3. 旧"突击支援（敌 Staggered 内切换）"**废弃**——与其类似的是连携技（Phase 5）。
+
+**机制（按键即决断、输入驱动，敌人蒙太奇定格帧 notify 触发两侧定格；无精防窗口 + 无资源消耗 = 原型取舍 → Phase 5）**：
+
+- **按键（黄闪内）→ PC**：`FindNearestEnemy(ParryRadius, Effect.Enemy.AttackWindow)` 命中敌人 E → 候选成员 B 摆位（**E 正前方** `AssistEntryDistance`，沿 E facing 推出、仅 yaw 面向 E）→ `BeginSwitchIn(false)`（不播 EnterMontage——入场演出 = 招架蒙太奇）→ Possess → 类扫描激活 `UZZZAssistDefensive`（Asset Tags=`Ability.Defense.Assist`，无 AbilityTriggers）→ **激活成功才给 E 挂 `Effect.Enemy.ParryPending`**（A 层 LooseTag；失败 = 敌人攻击照常、B 站场）→ 旧人物 A 照 §4.9.1 正常退场。
+- **敌人定格帧**（AM_EnemyAttack 上 `UZZZAnimNotify_EnemyParryImpact` notify，≈0.392s，摆在敌人伤害帧前）：消费 ParryPending（无 → 攻击照常）→ **E 自施冻结 GE**（notify 槽 1，默认 C++ 载体 `UZZZGameplayEffect_ParryStop`，BP 可覆写）→ 招架特效 cue（`GameplayCue.ZZZ.ParryImpact`）→ **向 B 的 ASC 广播 `Event.Combat.ParryImpact`**（事件路由——spec.Ability 是 CDO，直调实例方法会 ensure，2026-09-05 修复）→ B 招架 GA 实例消费：**`Montage_JumpToSection(Recover)` + 自施冻结**（同帧，定格姿势恒 = Recover 段首帧，与按键时刻解耦）→ **Cancel E 自身攻击**（`Ability.Attack.Enemy`）→ **E 挂普通受击硬直**（notify 槽 2，默认 `UZZZGameplayEffect_Stagger`）。
+- **蒙太奇契约（AM_AssistDefensive = 两段式）**：`[Guard 架势段 任意长] [Recover 收势段]`；Recover 首帧 = 定格姿势（出口姿态收敛）；Recover 内**先摆 `InputWindow(Effect.Input.CanBuffer)` 死区、再摆 `AbilityWindow(Effect.Ability.CanCombo)`**（2026-09-05 双窗口默认）——冻结期蒙太奇以 0.01 爬行，死区窗贴近段跳转点后**定格期间按键即预按入 PC 缓冲，开窗瞬间自动接支援突击**（GA_AssistRush = `UZZZFollowUpAttack` 子类，经基类 `NextComboAbility` 走通用 CanCombo 连招逻辑）；蒙太奇内不放 EndEvent/AttackEnd notify。BlendIn = 0（idle→姿势不得混合稀释定格观感，2026-09-05 实测）。
+- **输入门控**（`ZZZCharacter::Input_AbilityInputTagPressed`）：招架 GA 活动 + CanCombo → 路由给组合交接（跳过普攻起手）；招架活动无窗 → 吞键（广播喂双任务；CanBuffer 在身即预按入缓冲）；招架结束 → 普攻照常。
+- **双轨兜底**：`ParryPending`/`AttackWindow` 由 E 攻击 GA EndAbility 清理；`CanCombo`/`CanBuffer` 由基类 EndAbility 统一清理（2026-09-05 集中）。定格期间大招架蒙太奇提前 blend-out 的病根 = 源动画实际时长 < 蒙太奇段长（资产问题，2026-09-05 定位）。
+- 基类 `TrySetupComboHandoff()` 2026-09-05 起 = **双窗口默认件**（WaitInputBuffer + WaitCombo 一并武装）——技能默认支持 inputbuffer + combo，蒙太奇摆两窗即生效。
 
 ### 4.10 连携技 Director（Phase 5）
 
@@ -291,8 +298,9 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 | 能量 | `UZZZAttributeSet::Energy/MaxEnergy` + `UZZZGameplayEffect_EnergyDelta`（SetByCaller Data.Energy） |
 | 终结技 | `UZZZUltimate` → `GA_Ultimate`（消耗 Decibel） |
 | 闪避 / 完美闪避 | `UZZZDodge` + `State.SlowMotion` / `Ability.Defense.Dodge.Perfect` |
-| 弹刀 / 招架 | `UZZZAssistDefensive` → `GA_AssistDefensive` |
-| 突击支援 | `UZZZAssistOffensive` → `GA_AssistOffensive` |
+| 招架支援 | `UZZZAssistDefensive` → `GA_AssistDefensive`（✅ 2026-09-05，机制见 §4.9.2） |
+| 支援突击（招架追击） | `UZZZFollowUpAttack` 子类 `GA_AssistRush`（NextComboAbility 走通用连招） |
+| 快速支援 | ⬜ 预留（被击飞/技能窗 → 同一窗口 tag，PC 判定链扩展口） |
 | 连携技 | `UZZZChainAttack` → `GA_ChainAttack`（Director 调度） |
 | 架势 / 失衡 | `UZZZAttributeSet::Daze` / `MaxDaze` |
 | 异常积蓄 / 爆发 | `GE_AnomalyBuildup_*` / `GE_Anomaly_*` |

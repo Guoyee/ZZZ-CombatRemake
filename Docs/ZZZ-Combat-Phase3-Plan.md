@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 招架(弹刀) / 突击 / 编队切换 + 3.5 时间管理 + 特殊技/能量
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**（2026-09-05 全面核对同步）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架（AssistDefensive）C++ 全套 ✅（2026-09-04，未提交）——资产（GA_AssistDefensive/GA_AssistRush + 蒙太奇）待做**；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；TeamPanel ⬜；突击（Staggered 自动判定分支）C++ 未做
+> **状态**（2026-09-05 收尾同步）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；TeamPanel ⬜；突击（连携突击，原 Staggered 自动判定）C++ 未做（旧设计废弃 → 连携技 Phase 5）
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -32,14 +32,13 @@
 
 ## 三、进行中
 
-### 招架支援（弹刀）— C++ 就绪，资产待做
+### 招架支援 ✅（2026-09-05 定稿落地；定稿细节见架构文档 §4.9.2）
 
-代码（2026-09-04，已编译）：切换键按下 → `TryParrySwitch`（PC）：`ParryDetectRadius`(300) 内最近 AttackWindow 敌人命中 → 候选成员摆敌正前方 `AssistEntryDistance`(120) → `BeginSwitchIn(false)`（不播 EnterMontage，入场演出=招架蒙太奇）→ Possess → 类扫描激活 `UZZZAssistDefensive`（Asset Tags 须含 `Ability.Defense.Assist`）→ **激活成功才**给敌人挂 `Effect.Enemy.ParryPending`（失败 = 敌人攻击照常，不产生定格）。敌人蒙太奇 0.392s `ZZZAnimNotify_EnemyParryImpact`：消费 ParryPending → 敌自施 `UZZZGameplayEffect_ParryStop`（0.2s/0.01 定格）→ `GameplayCue.ZZZ.ParryImpact` → 扫玩家活动招架 GA 直调 `OnParryImpact`（同帧定格玩家，bParryImpacted 防重）→ `CancelAbilities(Ability.Attack.Enemy)`（GA End → 蒙太奇无主播完收尾）→ 敌人 Stagger。角色侧：招架 GA 活动期间禁普攻起手；收势尾窗 CanCombo → `AssistFollowUpAbility`（支援突击）手递手。敌人攻击 GA EndAbility 兜底清 ParryPending。
+最终实现（取代早前"直调 OnParryImpact"草案——spec.Ability 是 CDO，直调会 ensure，2026-09-05 改事件路由）：切换键按下 → `TryParrySwitch`（PC）：`ParryDetectRadius`(300) 内最近 AttackWindow 敌人命中 → 候选成员摆**敌正前方** `AssistEntryDistance`(120，沿 E facing 推出、yaw 面向 E) → `BeginSwitchIn(false)` → Possess → 类扫描激活 `UZZZAssistDefensive`（Asset Tags=Ability.Defense.Assist）→ **激活成功才**挂 `Effect.Enemy.ParryPending`。敌人蒙太奇 0.392s `ZZZAnimNotify_EnemyParryImpact`：消费 → 敌自施冻结（槽 1，GE_ParryFreeze **0.3s**/0.01）→ `GameplayCue.ZZZ.ParryImpact` → **广播 `Event.Combat.ParryImpact`** → B 招架 GA 实例消费：`Montage_JumpToSection(Recover)` + 自施冻结（同帧，定格姿势=Recover 首帧）→ `CancelAbilities(Ability.Attack.Enemy)` → 敌人 Stagger（槽 2）。角色侧：招架期禁普攻起手 + 吞键（喂双任务）；**Recover 内先 `InputWindow(CanBuffer)` 死区再 `AbilityWindow(CanCombo)`** → 冻结期预按、开窗自动接支援突击（`NextComboAbility`=GA_AssistRush，走通用连招）；基类 `TrySetupComboHandoff()` 双窗口默认件 + 窗 tag 兜底清理集中基类 EndAbility。敌人攻击 GA EndAbility 兜底清 ParryPending。
 
-**资产待做（人工，照 GA_Koleda_SpecialAttack 装配惯例）**：
-1. `GA_AssistDefensive`（基 `UZZZAssistDefensive`：Asset Tags=Ability.Defense.Assist；AttackMontage=招架蒙太奇；追击槽 `AssistFollowUpAbility`）+ 招架蒙太奇（**起手即招架姿势**，收势尾窗挂 CanCombo，姿势段覆盖敌人 0.392s 定格帧——入口 120cm + 敌人 1.2 倍缩放实测贴合）
-2. `GA_AssistRush`（支援突击，同追击技惯例：无触发器、Asset Tags 补 `Ability.Attack.Dash.Assist` 类身份 tag）
-3. 每角色 DefaultAbilities 追加 + PIE（黄闪窗内切换 → 招架定格 → 敌人硬直后恢复（需 09-05 失衡修复在场）→ 尾窗按攻击出支援突击）
+**资产（✅ 2026-09-05 完成）**：`GA_Koleda_AssistDefence`（Asset Tags=Ability.Defense.Assist、Activation Owned Tags=State.Invulnerable、AttackMontage、RecoverSectionName=Recover、NextComboAbility=GA_AssistRush、FreezeEffect=GE_ParryFreeze）；`GA_Koleda_AssistRush`（`UZZZFollowUpAttack` 子类 + AM_Koleda_SwitchIn_Attack_Ex）；`AM_Koleda_SwitchIn_Attack_Ex_Start`（两段式 [Default 0→0.2007][Recover 0.2007→]，BlendIn=0，Recover 内两窗）；DefaultAbilities 已追加（Okuma 全、**Jane 未配招架 GA 会 warning**）。
+
+**实战坑（2026-09-05 记录，勿再踩）**：① 源动画实际时长 < 蒙太奇段长 → 蒙太奇在段长前提前 blend-out（本次全链路卡死数日的病根——先用冲刺攻击隔离验证）；② 定格 1s 全停节奏拖死输入（0.3s 起调）；③ 招架蒙太奇 BlendIn 必须 0（idle→姿势混合稀释定格观感）；④ 段跳转 + 冻结爬行下 CanBuffer 起点需贴近段跳转点，窗才覆盖整个定格期。
 
 ### 剩余核对清单（2026-09-05 资产扫描确认仍缺）
 
@@ -54,8 +53,8 @@
 
 ## 四、后续 Task（依赖顺序）
 
-- **Task #3 剩余**：突击分支 C++（见三）。
-- **Task #5（资产+验证）**：三、中「资产待做 + 核对清单」全部；验证：弹刀 → 敌人硬直 → 失衡/恢复 → 再切换变突击（机制串联）；压力测试（三人快速切换 10+ 次无崩溃/tag 残留/CameraShake 堆叠）。
+- **Task #3 剩余**：突击（连携突击）C++——旧 Staggered 自动判定设计废弃，方向 = 连携技（Phase 5）；快速支援（被击飞/技能窗）预留接口未实现。
+- **Task #5（资产+验证）**：招架资产与验证 ✅（2026-09-05）；剩余核对清单见「三、剩余核对清单」（DashAttack/Counter 身份 tag、Jane 战斗资产、AM_Dodge 窗核对）；验证回归：招架 → 定格 → 失衡/恢复 → 快速切换 10+ 次无崩溃/tag 残留。
 - **Task #6**：TeamPanel —— override `OnPossess` → RefreshSquad（替代延迟一帧）；Entry 绑属性变化 delegate（不轮询）+ State.Dead 灰显。
 - **Phase 4+ 预备**：连携窗口细化时按怪种调 `_Stun` 时长（现 5s 默认，BP 子类可覆写）；失衡期间 Daze 积累可后续按设计收紧。
 

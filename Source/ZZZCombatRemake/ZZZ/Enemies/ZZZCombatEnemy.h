@@ -6,6 +6,7 @@
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
 #include "GameplayEffectTypes.h"
+#include "GameplayTagContainer.h"  // FGameplayTag (FindNearestEnemy RequiredState)
 #include "ZZZAttributeSet.h"
 #include "ZZZCombatEnemy.generated.h"
 
@@ -57,6 +58,15 @@ public:
 	/** Whether this enemy's attack AI is individually paused. */
 	UFUNCTION(BlueprintPure, Category = "ZZZ|EnemyAI")
 	bool IsPaused() const { return bIsPaused; }
+
+	/**
+	 * Nearest living, visible enemy to Origin that carries RequiredState (empty
+	 * tag = any). Filters hidden actors and State.Dead. Single implementation
+	 * shared by UZZZGameplayAbility::FindNearestEnemy (dodge perfect judgment)
+	 * and the PC's parry auto-judgment (2026-09-04).
+	 */
+	static AZZZCombatEnemy* FindNearestEnemy(
+		UWorld* World, const FVector& Origin, float Radius, const FGameplayTag& RequiredState);
 
 protected:
 	virtual void BeginPlay() override;

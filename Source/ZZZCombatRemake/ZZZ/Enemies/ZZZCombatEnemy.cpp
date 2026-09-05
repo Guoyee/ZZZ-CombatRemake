@@ -289,3 +289,47 @@ void AZZZCombatEnemy::TryStartAttack(float DeltaSeconds)
 		TEXT("[%s] TryStartAttack: TryActivateAbilityByClass -> %s"),
 		*GetName(), bActivated ? TEXT("TRUE") : TEXT("FALSE"));
 }
+
+AZZZCombatEnemy* AZZZCombatEnemy::FindNearestEnemy(
+	UWorld* World, const FVector& Origin, float Radius, const FGameplayTag& RequiredState)
+{
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
+	AZZZCombatEnemy* Best = nullptr;
+	float BestDistSq = Radius * Radius;
+
+	for (TActorIterator<AZZZCombatEnemy> It(World); It; ++It)
+	{
+		AZZZCombatEnemy* Candidate = *It;
+		if (!Candidate || Candidate->IsHidden())
+		{
+			continue;
+		}
+
+		UAbilitySystemComponent* CandidateASC = Candidate->GetAbilitySystemComponent();
+		if (!CandidateASC
+			|| CandidateASC->HasMatchingGameplayTag(GameplayTags.State_Dead))
+		{
+			continue;  // eliminated
+		}
+
+		if (RequiredState.IsValid()
+			&& !CandidateASC->HasMatchingGameplayTag(RequiredState))
+		{
+			continue;
+		}
+
+		const float DistSq = FVector::DistSquared(Origin, Candidate->GetActorLocation());
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = Candidate;
+		}
+	}
+
+	return Best;
+}

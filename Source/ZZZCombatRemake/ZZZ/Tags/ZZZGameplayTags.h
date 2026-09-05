@@ -67,6 +67,7 @@ public:
 	FGameplayTag Event_Combat_DodgePerfect; // "Event.Combat.DodgePerfect"
 	FGameplayTag Event_Combat_DodgeEnd;     // "Event.Combat.DodgeEnd" (前段结束，Notify 广播)
 	FGameplayTag Event_Combat_DodgeSlowStart; // "Event.Combat.DodgeSlowStart" (玩家慢放开始——位移末段 Notify 广播，动画师摆放)
+	FGameplayTag Event_Combat_ParryImpact;  // "Event.Combat.ParryImpact" (招架定格帧——敌人 notify 广播到玩家 ASC, 现役招架 GA 实例监听消费自施冻结, 2026-09-05)
 	FGameplayTag Event_Combat_AttackEnd;    // "Event.Combat.AttackEnd" (攻击主体结束，Notify 广播；区别于 State.Combat.Recovery)
 
 	// === Effect ===
@@ -77,6 +78,7 @@ public:
 	FGameplayTag Effect_Ability_CanDashAttack; // "Effect.Ability.CanDashAttack" (已废弃 2026-09-03——统一并入 Effect.Ability.CanCombo；保留注册防旧资产报错，勿用)
 	FGameplayTag Effect_Enemy_AttackWindow;   // "Effect.Enemy.AttackWindow" (敌人攻击前摇黄闪期——极限闪避 + 弹刀共用窗口)
 	FGameplayTag Effect_Enemy_Dodged;         // "Effect.Enemy.Dodged" (本次攻击已被完美闪避——闪避授予、敌人蒙太奇消费 notify 触发慢动作、攻击 GA EndAbility 兜底, 2026-09-03)
+	FGameplayTag Effect_Enemy_ParryPending;   // "Effect.Enemy.ParryPending" (本次攻击将被招架——PC 按键时授予、敌人定格帧 notify 消费触发定格、攻击 GA EndAbility 兜底, 2026-09-04)
 
 	// === SetByCaller Data ===
 	FGameplayTag Data_Damage;          // "Data.Damage"
@@ -90,6 +92,7 @@ public:
 	FGameplayTag GameplayCue_ZZZ_CameraShakeMid;     // "GameplayCue.ZZZ.CameraShake.Mid" (默认档)
 	FGameplayTag GameplayCue_ZZZ_CameraShakeHigh;    // "GameplayCue.ZZZ.CameraShake.High" (重震)
 	FGameplayTag GameplayCue_ZZZ_EnemyAttackWarning; // "GameplayCue.ZZZ.EnemyAttackWarning" (敌人攻击前摇黄闪)
+	FGameplayTag GameplayCue_ZZZ_ParryImpact;        // "GameplayCue.ZZZ.ParryImpact" (招架定格闪光——敌人定格帧, 无 handler 时静默)
 	// === 音效（一次性挥击/重击，蒙太奇帧触发 — 每个音频文件一个 tag） ===
 	FGameplayTag GameplayCue_ZZZ_Sound_BasicAttack01_Swing1;  // "GameplayCue.ZZZ.Sound.BasicAttack01.Swing1"
 	FGameplayTag GameplayCue_ZZZ_Sound_BasicAttack01_Swing2;  // "GameplayCue.ZZZ.Sound.BasicAttack01.Swing2"

@@ -73,6 +73,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 	GameplayTagsSingleton.Event_Combat_DodgeSlowStart = Manager.AddNativeGameplayTag(
 		FName("Event.Combat.DodgeSlowStart"),
 		FString("Player slow-motion start — notify on the dodge montage's displacement tail (animator-placed)"));
+	GameplayTagsSingleton.Event_Combat_ParryImpact = Manager.AddNativeGameplayTag(
+		FName("Event.Combat.ParryImpact"),
+		FString("Parry impact — enemy strike-frame notify broadcasts it to the player ASC; the active parry GA instance consumes it and freezes itself"));
 	GameplayTagsSingleton.Event_Combat_AttackEnd = Manager.AddNativeGameplayTag(
 		FName("Event.Combat.AttackEnd"), FString("Attack action section ended — ability may end, montage recovery continues"));
 
@@ -125,6 +128,9 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 	GameplayTagsSingleton.Effect_Enemy_Dodged = Manager.AddNativeGameplayTag(
 		FName("Effect.Enemy.Dodged"),
 		FString("Attack perfectly dodged (granted by the dodge at press; consumed by the enemy-montage slow notify; attack GA EndAbility fallback)"));
+	GameplayTagsSingleton.Effect_Enemy_ParryPending = Manager.AddNativeGameplayTag(
+		FName("Effect.Enemy.ParryPending"),
+		FString("Attack being parried (granted by the PC at the parry press; consumed by the enemy-montage parry-impact notify; attack GA EndAbility fallback)"));
 
 	// === SetByCaller Data ===
 	GameplayTagsSingleton.Data_Damage = Manager.AddNativeGameplayTag(
@@ -189,6 +195,14 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 			? IniCueTag
 			: Manager.AddNativeGameplayTag(
 				FName("GameplayCue.ZZZ.EnemyAttackWarning"), FString("Enemy attack wind-up warning flash"));
+	}
+	{
+		const FGameplayTag IniCueTag =
+			FGameplayTag::RequestGameplayTag(FName("GameplayCue.ZZZ.ParryImpact"), false);
+		GameplayTagsSingleton.GameplayCue_ZZZ_ParryImpact = IniCueTag.IsValid()
+			? IniCueTag
+			: Manager.AddNativeGameplayTag(
+				FName("GameplayCue.ZZZ.ParryImpact"), FString("Parry impact flash at the enemy strike frame"));
 	}
 	{
 		const FGameplayTag IniCueTag =

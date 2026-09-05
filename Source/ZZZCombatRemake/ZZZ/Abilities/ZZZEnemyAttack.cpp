@@ -64,6 +64,14 @@ void UZZZEnemyAttack::EndAbility(
 		// notify would wrongly consume it and pay a slow for a dodge that
 		// never happened against it.
 		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Enemy_Dodged);
+
+		// Same double-track fallback for the parry flag (2026-09-04):
+		// Effect.Enemy.ParryPending is granted by the PC's parry judgment and
+		// consumed by the UZZZAnimNotify_EnemyParryImpact on this montage. If
+		// the attack ends before that notify (hit-cancel / death / montage
+		// never reached it), the stale flag must not linger — a LATER attack's
+		// notify would wrongly freeze the enemy for a parry that never happened.
+		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Enemy_ParryPending);
 	}
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);

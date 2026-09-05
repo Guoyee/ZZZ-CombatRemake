@@ -3,6 +3,7 @@
 #include "ZZZGameplayAbility.h"
 #include "AbilitySystemComponent.h"
 #include "AbilityTask_WaitCombo.h"
+#include "AbilityTask_WaitInputBuffer.h"
 #include "Abilities/Tasks/AbilityTask_PlayMontageAndWait.h"
 #include "EngineUtils.h"
 #include "Enemies/ZZZCombatEnemy.h"
@@ -52,52 +53,15 @@ AZZZCombatEnemy* UZZZGameplayAbility::FindNearestEnemy(
 	float Radius, const FGameplayTag& RequiredState) const
 {
 	const AActor* Avatar = GetAvatarActorFromActorInfo();
-	if (!Avatar)
+	if (!Avatar || !Avatar->GetWorld())
 	{
 		return nullptr;
 	}
 
-	UWorld* World = Avatar->GetWorld();
-	if (!World)
-	{
-		return nullptr;
-	}
-
-	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
-	AZZZCombatEnemy* Best = nullptr;
-	float BestDistSq = Radius * Radius;
-
-	for (TActorIterator<AZZZCombatEnemy> It(World); It; ++It)
-	{
-		AZZZCombatEnemy* Candidate = *It;
-		if (!Candidate || Candidate->IsHidden())
-		{
-			continue;
-		}
-
-		UAbilitySystemComponent* CandidateASC = Candidate->GetAbilitySystemComponent();
-		if (!CandidateASC
-			|| CandidateASC->HasMatchingGameplayTag(GameplayTags.State_Dead))
-		{
-			continue;  // eliminated
-		}
-
-		if (RequiredState.IsValid()
-			&& !CandidateASC->HasMatchingGameplayTag(RequiredState))
-		{
-			continue;
-		}
-
-		const float DistSq = FVector::DistSquared(
-			Avatar->GetActorLocation(), Candidate->GetActorLocation());
-		if (DistSq < BestDistSq)
-		{
-			BestDistSq = DistSq;
-			Best = Candidate;
-		}
-	}
-
-	return Best;
+	// Single implementation on AZZZCombatEnemy (2026-09-04) — shared with the
+	// PC's parry auto-judgment.
+	return AZZZCombatEnemy::FindNearestEnemy(
+		Avatar->GetWorld(), Avatar->GetActorLocation(), Radius, RequiredState);
 }
 
 void UZZZGameplayAbility::ActivateAbility(
@@ -146,6 +110,17 @@ void UZZZGameplayAbility::EndAbility(
 				EndEventHandle.Reset();
 			}
 		}
+	}
+
+	// Window-tag fallback (CLAUDE.md rule 1 layer A, 2026-09-05 集中到基类):
+	// 蒙太奇被打断可能跳过 AnimNotifyState::NotifyEnd, 残留的 CanCombo / CanBuffer
+	// 会错误路由下一次攻击输入。此处统一兜底 —— 子类各自的移除(如 BasicAttack/
+	// Dodge/AssistDefensive/SpecialAttack 的 EndAbility)为无害重复, 新技能无需再写。
+	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
+	{
+		const FZZZGameplayTags& Tags = FZZZGameplayTags::Get();
+		ASC->RemoveLooseGameplayTag(Tags.Effect_Ability_CanCombo);
+		ASC->RemoveLooseGameplayTag(Tags.Effect_Input_CanBuffer);
 	}
 
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
@@ -210,10 +185,19 @@ void UZZZGameplayAbility::TrySetupComboHandoff()
 		return;
 	}
 
+	const FZZZGameplayTags& Tags = FZZZGameplayTags::Get();
+
+	// 死区预按 (2026-09-05, 默认双窗之一): 蒙太奇摆 InputWindow(CanBuffer) 后,
+	// 窗前按键写入 PC 缓冲而非丢弃 —— CanCombo 开窗时被下方 WaitCombo 消费。
+	// 无 CanBuffer 窗 = 任务 inert, 无害。原属 UZZZBasicAttack, 下沉基类统一武装。
+	InputBufferTask = UAbilityTask_WaitInputBuffer::WaitInputBuffer(
+		this, Tags.Input_Attack);
+	InputBufferTask->ReadyForActivation();
+
 	ComboHandoffTask = UAbilityTask_WaitCombo::WaitCombo(
 		this,
-		FZZZGameplayTags::Get().Effect_Ability_CanCombo,
-		FZZZGameplayTags::Get().Input_Attack);
+		Tags.Effect_Ability_CanCombo,
+		Tags.Input_Attack);
 	ComboHandoffTask->OnComboTriggered.AddDynamic(this, &UZZZGameplayAbility::OnComboHandoffTriggered);
 	ComboHandoffTask->ReadyForActivation();
 }
@@ -249,7 +233,13 @@ void UZZZGameplayAbility::OnComboHandoffTriggered()
 	// Transition order (critical): activate the next ability FIRST, then end
 	// this one — the next montage's BlendIn overlaps this ability's recovery
 	// (收刀), avoiding the BlendOut→BlendIn gap frame.
-	ASC->TryActivateAbilityByClass(Next);
+	const bool bActivated = ASC->TryActivateAbilityByClass(Next);
+	if (!bActivated)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning,
+			TEXT("%s: combo handoff — TryActivateAbilityByClass('%s') FAILED"),
+			*GetName(), *GetNameSafe(Next));
+	}
 	EndAbility(CurrentSpecHandle, CurrentActorInfo, CurrentActivationInfo, true, false);
 }
 

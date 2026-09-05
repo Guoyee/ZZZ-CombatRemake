@@ -6,7 +6,6 @@
 #include "ZZZGameplayAbility.h"
 #include "ZZZBasicAttack.generated.h"
 
-class UAbilityTask_WaitInputBuffer;
 class UAbilityTask_RotateToTarget;
 
 /**
@@ -20,12 +19,13 @@ class UAbilityTask_RotateToTarget;
  *
  * On activation, this ability spawns:
  *   1. PlayMontageAndWait — plays the attack montage (base class template)
- *   2. WaitInputBuffer    — captures buffered input after dead zone
- *   3. Combo handoff      — WaitCombo + transition via the base class opt-in
- *      TrySetupComboHandoff() (2026-08-29): a combo-window input activates
- *      NextComboAbility first, then ends this one (no blend gap). Spawned
- *      unconditionally — on terminal hits its window-close branch is the
- *      combo system's stale-buffer flush.
+ *   2. Two-window input support — the base class TrySetupComboHandoff()
+ *      (2026-09-05 下沉基类) arms BOTH WaitInputBuffer (CanBuffer 死区预按 →
+ *      PC 缓冲) and WaitCombo (CanCombo 窗消费缓冲/实时按键 → 交接下一段):
+ *      a combo-window input activates NextComboAbility first, then ends this
+ *      one (no blend gap). Spawned unconditionally — on terminal hits the
+ *      window-close branch is the combo system's stale-buffer flush.
+ *   Window-tag fallback (CanCombo/CanBuffer) 由基类 EndAbility 统一兜底。
  *
  * This is the central orchestrator of the combo system.
  * All combo timing is driven by montage notifies, not hardcoded floats.
@@ -46,18 +46,7 @@ public:
 		const FGameplayAbilityActivationInfo ActivationInfo,
 		const FGameplayEventData* TriggerEventData) override;
 
-	virtual void EndAbility(
-		const FGameplayAbilitySpecHandle Handle,
-		const FGameplayAbilityActorInfo* ActorInfo,
-		const FGameplayAbilityActivationInfo ActivationInfo,
-		bool bReplicateEndAbility, bool bWasCancelled) override;
-
 protected:
-	// === Managed tasks ===
-
-	UPROPERTY()
-	TObjectPtr<UAbilityTask_WaitInputBuffer> InputBufferTask;
-
 	// === Targeting ===
 
 	/** When enabled, the character auto-rotates toward the nearest enemy during this attack. */

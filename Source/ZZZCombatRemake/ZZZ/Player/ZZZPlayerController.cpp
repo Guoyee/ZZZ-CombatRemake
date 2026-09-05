@@ -2,6 +2,8 @@
 
 #include "ZZZPlayerController.h"
 
+#include "AbilitySystemComponent.h"
+#include "Abilities/ZZZAssistDefensive.h"
 #include "EnhancedInputComponent.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/Engine.h"
@@ -11,6 +13,7 @@
 #include "GameFramework/GameplayCameraComponent.h"
 #include "GameFramework/GameplayCamerasPlayerCameraManager.h"
 #include "InputCoreTypes.h"
+#include "Tags/ZZZGameplayTags.h"
 #include "ZZZCharacter.h"
 #include "ZZZCombatEnemy.h"
 #include "ZZZCombatRemake.h"
@@ -160,51 +163,26 @@ void AZZZPlayerController::SwitchToNextCharacter()
 
 	AZZZCharacter* CurrentPawn = Cast<AZZZCharacter>(GetPawn());
 
-	// ── 1. Pick the next candidate class ──
-	// Skip the current class; while the current pawn is alive, also skip
-	// classes whose live instance is already eliminated (State.Dead).
-	int32 CurrentIndex = INDEX_NONE;
+	// ── 0. 招架自动判定 (2026-09-04, 状态优先级语义): 切换键按下时, 最近的
+	// AttackWindow 敌人(黄闪前摇段 — 与极限闪避共用窗口)命中 → 招架支援路径:
+	// 新人物在敌人正前方入场并激活招架 GA; 敌人攻击自然挥至定格帧, 由
+	// ParryImpact notify 触发定格 + 打断。否则回落普通切换。
 	if (CurrentPawn)
 	{
-		for (int32 i = 0; i < SquadClasses.Num(); ++i)
+		if (AZZZCombatEnemy* ParryEnemy = AZZZCombatEnemy::FindNearestEnemy(
+			GetWorld(), CurrentPawn->GetActorLocation(), ParryDetectRadius,
+			FZZZGameplayTags::Get().Effect_Enemy_AttackWindow))
 		{
-			if (SquadClasses[i] == CurrentPawn->GetClass())
-			{
-				CurrentIndex = i;
-				break;
-			}
+			TryParrySwitch(ParryEnemy);
+			return;
 		}
 	}
 
-	UClass* NextClass = nullptr;
-	for (int32 Offset = 1; Offset <= SquadClasses.Num(); ++Offset)
-	{
-		const int32 Index = (CurrentIndex + Offset) % SquadClasses.Num();
-		UClass* Candidate = SquadClasses[Index];
-		if (!Candidate || (CurrentPawn && Candidate == CurrentPawn->GetClass()))
-		{
-			continue;
-		}
-		if ((!CurrentPawn || !CurrentPawn->IsEliminated()) && IsSquadClassEliminated(Candidate))
-		{
-			continue;
-		}
-		NextClass = Candidate;
-		break;
-	}
-
+	// ── 1. Pick the next candidate class ── (shared with TryParrySwitch)
+	UClass* NextClass = PickNextSquadClass(CurrentPawn);
 	if (!NextClass)
 	{
-		UE_LOG(LogZZZCombatRemake, Warning,
-			TEXT("SwitchToNextCharacter: no valid candidate class found."));
-		// 2026-08-31: 之前静默失败=用户看到"没反应"。屏幕提示阵亡原因 —
-		// 只有当前角色存活时, 切换无候选 = 其他成员全部阵亡。
-		if (GEngine)
-		{
-			GEngine->AddOnScreenDebugMessage(1, 3.0f, FColor::Yellow,
-				TEXT("No squad member available to switch to — others are eliminated."));
-		}
-		return;
+		return;  // PickNextSquadClass already surfaced the reason on screen
 	}
 
 	// ── 2. Register the outgoing pawn (e.g. the GameMode-spawned starter) ──
@@ -292,6 +270,165 @@ void AZZZPlayerController::SwitchToNextCharacter()
 
 	UE_LOG(LogZZZCombatRemake, Log,
 		TEXT("SwitchToNextCharacter: switched to '%s'."), *GetNameSafe(NextClass));
+}
+
+UClass* AZZZPlayerController::PickNextSquadClass(AZZZCharacter* CurrentPawn)
+{
+	// Skip the current class; while the current pawn is alive, also skip
+	// classes whose live instance is already eliminated (State.Dead).
+	int32 CurrentIndex = INDEX_NONE;
+	if (CurrentPawn)
+	{
+		for (int32 i = 0; i < SquadClasses.Num(); ++i)
+		{
+			if (SquadClasses[i] == CurrentPawn->GetClass())
+			{
+				CurrentIndex = i;
+				break;
+			}
+		}
+	}
+
+	UClass* NextClass = nullptr;
+	for (int32 Offset = 1; Offset <= SquadClasses.Num(); ++Offset)
+	{
+		const int32 Index = (CurrentIndex + Offset) % SquadClasses.Num();
+		UClass* Candidate = SquadClasses[Index];
+		if (!Candidate || (CurrentPawn && Candidate == CurrentPawn->GetClass()))
+		{
+			continue;
+		}
+		if ((!CurrentPawn || !CurrentPawn->IsEliminated()) && IsSquadClassEliminated(Candidate))
+		{
+			continue;
+		}
+		NextClass = Candidate;
+		break;
+	}
+
+	if (!NextClass)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning,
+			TEXT("PickNextSquadClass: no valid candidate class found."));
+		// 2026-08-31: 之前静默失败=用户看到"没反应"。屏幕提示阵亡原因 —
+		// 只有当前角色存活时, 切换无候选 = 其他成员全部阵亡。
+		if (GEngine)
+		{
+			GEngine->AddOnScreenDebugMessage(1, 3.0f, FColor::Yellow,
+				TEXT("No squad member available to switch to — others are eliminated."));
+		}
+	}
+	return NextClass;
+}
+
+void AZZZPlayerController::TryParrySwitch(AZZZCombatEnemy* ParryEnemy)
+{
+	if (!ParryEnemy || !ParryEnemy->GetAbilitySystemComponent())
+	{
+		return;
+	}
+
+	AZZZCharacter* CurrentPawn = Cast<AZZZCharacter>(GetPawn());
+
+	// ── 1. Pick the next candidate class ──
+	UClass* NextClass = PickNextSquadClass(CurrentPawn);
+	if (!NextClass)
+	{
+		return;  // PickNextSquadClass already surfaced the reason on screen
+	}
+
+	// ── 2. Register the outgoing pawn (e.g. the GameMode-spawned starter) ──
+	if (CurrentPawn)
+	{
+		SquadMembers.AddUnique(CurrentPawn);
+	}
+
+	// ── 3. Get or spawn the next member ──
+	AZZZCharacter* NextMember = GetOrSpawnSquadMember(NextClass);
+	if (!NextMember)
+	{
+		UE_LOG(LogZZZCombatRemake, Error,
+			TEXT("TryParrySwitch: failed to spawn '%s'."), *GetNameSafe(NextClass));
+		return;
+	}
+
+	// ── 4. 入场点 = 敌人正前方 (2026-09-05 符号修正) ──
+	// 沿敌人面向方向(+Forward —— 敌人正前方 = 玩家所在侧)移动 AssistEntryDistance;
+	// 不可从敌人位置直接减坐标/世界轴偏移。敌人只设 yaw(见 AZZZCombatEnemy AI),
+	// GetActorForwardVector 即其面向; 新人物朝向 = 敌人, 仅 yaw(防跨高度俯仰倾斜)。
+	const FVector EnemyLocation = ParryEnemy->GetActorLocation();
+	const FVector EnemyForward = ParryEnemy->GetActorForwardVector();
+	const FVector EntryLocation = EnemyLocation + EnemyForward * AssistEntryDistance;
+	FRotator FaceEnemyRotation = (EnemyLocation - EntryLocation).Rotation();
+	FaceEnemyRotation.Pitch = 0.0f;
+	FaceEnemyRotation.Roll = 0.0f;
+	NextMember->SetActorLocationAndRotation(EntryLocation, FaceEnemyRotation);
+
+	// ── 5. Enter immediately (同普通切换时序; 不播 EnterMontage ──
+	// 入场演出 = 招架 GA 的招架蒙太奇, 激活在步骤 7) ──
+	bIsSwitching = true;
+	NextMember->BeginSwitchIn(/*bPlayEnterMontage=*/false);
+
+	// ── 6. Drop stale buffered input before StartSwitchOut ──
+	ConsumeBufferedInput();
+
+	// ── 7. Outgoing pawn: normal switch-out state machine ──
+	if (CurrentPawn)
+	{
+		CurrentPawn->OnSwitchOutCompleted.AddUniqueDynamic(
+			this, &AZZZPlayerController::OnSwitchOutCompleted);
+		CurrentPawn->StartSwitchOut();
+	}
+	else
+	{
+		bIsSwitching = false;
+	}
+
+	// ── 8. Possess (camera handled by OnPossess; rotation preserved) ──
+	const FRotator ControlRotationBeforePossess = GetControlRotation();
+	Possess(NextMember);
+	SetControlRotation(ControlRotationBeforePossess);
+
+	// ── 9. 激活招架 GA + 挂 ParryPending (2026-09-04) ──
+	// 类扫描同 TryActivateSpecialAttack (资产 tag 枚举不可靠——tag 是 BP 数据):
+	// 找 GA_AssistDefensive (UZZZAssistDefensive 子类, Asset Tags 含
+	// Ability.Defense.Assist) 并激活。激活成功才给敌人挂 Effect.Enemy.ParryPending
+	// —— 激活失败(BP 未配置/Commit 不过/tag 阻塞) = 敌人攻击照常挥出, 新人物站场,
+	// 不产生定格。
+	UAbilitySystemComponent* NextASC = NextMember->GetAbilitySystemComponent();
+	const FZZZGameplayTags& GameplayTags = FZZZGameplayTags::Get();
+	bool bParryActivated = false;
+	if (NextASC)
+	{
+		for (const FGameplayAbilitySpec& Spec : NextASC->GetActivatableAbilities())
+		{
+			if (Spec.Ability
+				&& Spec.Ability->GetClass()->IsChildOf(UZZZAssistDefensive::StaticClass())
+				&& Spec.Ability->GetAssetTags().HasTag(GameplayTags.Ability_Defense_Assist))
+			{
+				if (NextASC->TryActivateAbility(Spec.Handle, /*bAllowRemoteActivation=*/true))
+				{
+					bParryActivated = true;
+				}
+				break;
+			}
+		}
+	}
+
+	if (bParryActivated)
+	{
+		ParryEnemy->GetAbilitySystemComponent()->AddLooseGameplayTag(
+			GameplayTags.Effect_Enemy_ParryPending);
+		UE_LOG(LogZZZCombatRemake, Log,
+			TEXT("TryParrySwitch: '%s' parrying '%s' — ParryPending granted (strike frame notify pays the impact)."),
+			*GetNameSafe(NextMember), *GetNameSafe(ParryEnemy));
+	}
+	else
+	{
+		UE_LOG(LogZZZCombatRemake, Warning,
+			TEXT("TryParrySwitch: '%s' has no activatable GA_AssistDefensive (Ability.Defense.Assist) — enemy attack plays through."),
+			*GetNameSafe(NextMember));
+	}
 }
 
 void AZZZPlayerController::OnSwitchOutCompleted(AZZZCharacter* SwitchedOutCharacter)
