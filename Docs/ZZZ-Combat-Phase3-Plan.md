@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 招架(弹刀) / 突击 / 编队切换 + 3.5 时间管理 + 特殊技/能量
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel ⬜；突击（连携突击，原 Staggered 自动判定）C++ 未做（旧设计废弃 → 连携技 Phase 5）
+> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel/突击 C++ 未做（并入后续排程，见 §四）；**2026-09-08 排程决策：元素/异常不做（仅玩法相关，与角色表现无关）；后续顺序 = HUD（吸收 TeamPanel）→ 连携技 → 大招 → 特效全量铺底**
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -52,12 +52,16 @@
 - **突击（连携突击）C++**：切换自动判定只实现了 AttackWindow→招架分支；Staggered(600)→突击分支（`UZZZAssistOffensive` 或同路径）未写；`SwitchToCharacter(Direction)` 参数化未做
 - **TeamPanel**（Task #6）
 
-## 四、后续 Task（依赖顺序）
+## 四、后续排程（2026-09-08 定序，替代旧 Task 依赖序）
 
-- **Task #3 剩余**：突击（连携突击）C++——旧 Staggered 自动判定设计废弃，方向 = 连携技（Phase 5）；快速支援（被击飞/技能窗）预留接口未实现。
-- **Task #5（资产+验证）**：招架资产与验证 ✅（2026-09-05）；剩余核对清单见「三、剩余核对清单」（DashAttack/Counter 身份 tag、Jane 战斗资产、AM_Dodge 窗核对）；验证回归：招架 → 定格 → 失衡/恢复 → 快速切换 10+ 次无崩溃/tag 残留。
-- **Task #6**：TeamPanel —— override `OnPossess` → RefreshSquad（替代延迟一帧）；Entry 绑属性变化 delegate（不轮询）+ State.Dead 灰显。
-- **Phase 4+ 预备**：连携窗口细化时按怪种调 `_Stun` 时长（现 5s 默认，BP 子类可覆写）；失衡期间 Daze 积累可后续按设计收紧。
+**决策**：元素/异常（原 Phase 4）不做——仅玩法相关、与角色表现无关。按依赖与验收依赖定序：
+
+1. **HUD**（吸收 Task #6 TeamPanel）：小队按钮（override `OnPossess` → RefreshSquad 替代延迟一帧；Entry 绑属性变化 delegate（不轮询）+ State.Dead 灰显）+ 技能按钮 + 敌人血条/失衡条。前提定夺：敌人目标选取（准星射线 or 复用 FindNearestEnemy 判定链）；大招槽先留空位（Decibel 未落地）。
+2. **连携技**（替代旧 Task #3 突击方向——原 Staggered 自动判定废弃）：复用失衡（`State.Stun` tag 判据）/冻结 GE/编队切换/相机特写预留全链；前提定夺：失衡→连携节奏（现 `_Stun` 5s 偏长，按怪种调，原"Phase 4+ 预备"项）；镜头特写模板在此趟出。
+3. **大招**：新地基 = Decibel 全队共享宿主（宿主位置定夺——PlayerState 与 GameState 两处文档口径不一致，开工统一）；终结镜头复用 2 的特写基建。
+4. **特效全量铺底**：旧技能 + 2/3 新技能一次覆盖不返工；接入 = GameplayCue + Niagara（R20 镜像 + 三档 cue tag + 打击帧 per-instance 开关基建已就绪）；试点可在 2/3 开发期先行立模板。
+
+前置顺手项（不阻塞本序，人工资产操作时一并清）：§三「剩余核对清单」（DashAttack/Counter 身份 tag、Jane 战斗资产、AM_Dodge 窗核对）；快速支援预留接口维持挂起（未排程）。
 
 ## 五、风险与坑（实施时逐条对照）
 

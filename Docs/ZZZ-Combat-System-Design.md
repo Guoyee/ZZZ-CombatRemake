@@ -2,7 +2,7 @@
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 单机 · DX12/SM6
 > **目标**: 在现有 ThirdPerson 基础上复刻《绝区零》核心战斗逻辑
-> **状态**（2026-09-08 对齐）: Phase 1/1.5/2 ✅；Phase 3/3.5 落地 ✅（招架支援 09-05、Motion Warping 09-07 收尾；剩余 = 资产级待办，见 Phase3 计划「三」）；Phase 4/5/6 ⬜
+> **状态**（2026-09-08 对齐）: Phase 1/1.5/2 ✅；Phase 3/3.5 落地 ✅（招架支援 09-05、Motion Warping 09-07 收尾；TeamPanel/突击并入后续排程）；**后续排程（2026-09-08 决策）：HUD → 连携技 → 大招 → 特效，元素/异常不做（见 §五）**
 > **旧版备份**: `Docs/archive/ZZZ-Combat-System-Design.md.orig`（勿读，仅查证历史）
 
 ## 一、目标系统
@@ -111,7 +111,7 @@ Data:         Data.Damage / Data.Daze / Data.Energy（2026-09-03——⚠ 另需
 GameplayCue:  GameplayCue.ZZZ.DamageNumber / CameraShake(.Low/.Mid/.High) / EnemyAttackWarning
 ```
 
-规划中（Phase 4/5）：Input.Ultimate、Ability.Attack.Ultimate、Ability.ChainAttack、Element.*、Anomaly.*、Team.Slot.*、State.SuperArmor/IgnoreInput、Event.Combat.ChainReady。
+规划中：Input.Ultimate、Ability.Attack.Ultimate、Ability.ChainAttack、Team.Slot.*、State.SuperArmor/IgnoreInput、Event.Combat.ChainReady（Element.*、Anomaly.* 随 Phase 4 取消 2026-09-08，不注册）。
 
 Tag 生命周期规则（2026-08-29 定稿，五层）：**A 动画窗口** → notify 配对 LooseTag + 双轨兜底（有主段 EndAbility / 无主段消费方显式清理）；**B 持久身份** → Infinite GE + 应用时 `DynamicGrantedTags`；**C 核心状态** → GE 管理（禁 LooseTag）；**D 能力生命周期** → `ActivationOwnedTags`；**E 本地路由标志** → Duration GE 自过期。**玩法 tag 除 A 层 notify 配对外禁用 `AddLooseGameplayTag`**；命令摘要见 CLAUDE.md 规则 1。
 
@@ -153,7 +153,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 
 ### 4.4 伤害统一 ExecCalc（UZZZDamageExecution）
 
-- 捕获：Source.Attack / Target.Defense / Target.IncomingDamage / Target.Daze（Anomaly 捕获 Phase 4 再加）。
+- 捕获：Source.Attack / Target.Defense / Target.IncomingDamage / Target.Daze（Anomaly 捕获原拟 Phase 4——已取消 2026-09-08，不做）。
 - SetByCaller（FGameplayTag 版）：`Data.Damage`（缺省回退 Attack 捕获）、`Data.Daze`（绝对值）。
 - 公式：`DefenseFactor = Max(0, 1 - Defense/(Defense+500))`；`FinalDamage = Max(0, BaseDamage × DefenseFactor)`。
 - 输出：Target.IncomingDamage（Meta，消费转扣血）+ Target.Daze（叠加，满阈值 → State.Stun）。
@@ -232,7 +232,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 
 目标进入 `State.Stun` → `AZZZCombatDirector`（GameState 子组件）调度：暂停敌人 AI（SlowMotion）+ 非活跃队友 IgnoreInput/Invulnerable → 连携选择 UI → `TryActivateAbilitiesByTag(Ability.ChainAttack)` → `AbilityTask_ChainCamera` 镜头 Lerp → 最多 3 次，已行动角色不可重复。
 
-### 4.11 元素异常模型（Phase 4）
+### 4.11 元素异常模型（~~Phase 4~~ 2026-09-08 决策不做：仅玩法相关，与角色表现无关；本节留档备查）
 
 ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack）→ 达阈值触发异常爆发 GE（灼烧/冻结/感电/强击/侵蚀）→ FIFO 单异常 → 清空积蓄。属性变化走 Delegate（非 PostGameplayEffectExecute）。
 
@@ -280,10 +280,10 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 | 1 | GAS 基础设施（AttributeSet/基类/ExecCalc/Tags/角色） | ✅ |
 | 1.5 | 输入→Tag 桥接（UZZZInputConfig） | ✅ |
 | 2 | 普攻连段 + 双窗口缓冲 + 伤害管线 + 飘字 | ✅（遗留：AbilityTask_DoTrace 推迟 Phase 5+） |
-| 3 | 闪避/完美闪避/弹刀/突击/编队切换/特殊技+能量 | 🔄 进行中（特殊技+能量 C++ ✅ 2026-09-03，见 Phase3 计划） |
-| 3.5 | 时间管理（SlowMotion/HitStop/震屏） | 🔄 并入 Phase 3 |
-| 4 | 元素 & 异常 | ⬜ |
-| 5 | 终结技 & 连携技（Director + Decibel + ChainCamera + 相机混合） | ⬜ |
+| 3 | 闪避/完美闪避/弹刀/突击/编队切换/特殊技+能量 | ✅（2026-09-08 完结；收尾细节见 Phase3 计划） |
+| 3.5 | 时间管理（SlowMotion/HitStop/震屏） | ✅（并入 Phase 3） |
+| 4 | 元素 & 异常 | ❌ 不做（2026-09-08 决策：仅玩法相关，与角色表现无关） |
+| 5 | HUD / 连携技 / 大招 / 特效（原终结技&连携技 Director + Decibel + ChainCamera 范围细化） | ⬜ 排程（2026-09-08）：HUD（含 TeamPanel/敌人血条失衡条）→ 连携技 → 大招（Decibel）→ 特效铺底，见 Phase3 计划 §四 |
 | 6 | AI & 关卡（StateTree 升级/波次/HUD 合成） | ⬜ |
 
 ## 六、数据驱动设计
