@@ -36,7 +36,7 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 6. **M1 回调区分**：`PostGameplayEffectExecute` 仅对 Instant GE 触发；Duration/Infinite GE 属性变化走 `GetGameplayAttributeValueChangeDelegate()`。
 7. **收刀 = 连段窗口 + 标准打断**（完整流程见 System-Design §4.7，新技能一律照此）：① 动作段末 notify（`EndEventTag`，未配默认 `Event.Combat.AttackEnd`）定 GA 结束位（`bStopWhenAbilityEnds=false`）→ ② 收刀段无主播放 + `AbilityWindow(State.Combat.Recovery)` → ③ 打断入口（`Move()`）查 tag → StopAnimMontage → **消费方显式 RemoveLooseGameplayTag**。**不调 CancelAbilities**（GA 由 OnInterrupted→EndAbility 兜底；`Move()` 内 Cancel 为 basic attack 旧残留，新技能不依赖）。
 8. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接赋属性）；`FGameplayModifierEvaluatedData` 构造必须 4 参；SetByCaller 用 FGameplayTag 版；UFUNCTION 参数禁止 struct 裸指针（用 GenericGameplayEventCallbacks + lambda）。
-9. **文档同步与 git 提交时机**：流程 = 改完代码 → **人工 PIE 验证通过后** → 才同步文档 + 提交 git（验证前不动文档、不提交）；收尾 = 改对冲突文档节（来不及则节首盖 `⚠ 过期 YYYY-MM-DD`）+ 覆盖式更新「当前状态」（≤10 行、带日期；**只记进度/下一步/资产级待办**，细则进架构文档与 commit message，防段落回涨）同 commit。发现矛盾 → 以代码与最近定稿为准，禁按旧文档实现、禁静默忽略。
+9. **文档同步与 git 提交时机**：流程 = 改完代码 → **人工 PIE 验证通过后** → 才同步文档 + 提交 git（验证前不动文档、不提交）；收尾 = 改对冲突文档节（来不及则节首盖 `⚠ 过期 YYYY-MM-DD`）+ 覆盖式更新 `Docs/ZZZ-Combat-Phase3-Plan.md` 顶部状态行（≤10 行、带日期；**只记进度/下一步/资产级待办**，细则进架构文档与 commit message，防段落回涨）同 commit。发现矛盾 → 以代码与最近定稿为准，禁按旧文档实现、禁静默忽略。
 
 ## MCP 资产操作规则
 
@@ -44,12 +44,8 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 - **禁写**：set_property / save / create_* / duplicate / rename / delete / move / add_* / remove_* 一律禁止。BP 配置、Niagara、蒙太奇通知、资产创建由**人工在编辑器内操作**。
 - 需要改资产时，向用户给出操作步骤指导（路径、面板、参数值），由用户执行。诊断 / 查日志 / PIE 验证不受限。
 
-## 当前状态（2026-09-08 起压缩版——落地细节与坑已同步架构文档 + git commit，本节只留进度 / 待办 / 指针）
+## 当前进度（指针，勿在本文件维护副本）
 
-- ✅ Phase 1（GAS 基础设施）/ 1.5（输入→Tag 桥接）/ 2（普攻连段+双窗口输入缓冲+伤害管线+飘字）；敌人失衡恢复（`State.Stun` 由 Infinite 改 `UZZZGameplayEffect_Stun` Duration 5s 自过期——Daze 满不再永久卡死；判据改查 tag 而非 bool）——均 PIE 验证通过
-- ✅ 普通切换 + 招架支援全链路 + 玩家俯仰限幅（-60/+30）——均 PIE 验证通过（2026-09-02/04/05）；**细节与坑（双段式蒙太奇、ParryImpact 事件路由、CDO ensure、快速支援预留口等）见设计文档 §4.9.2 与 §八**、`ZZZ-Camera-Architecture.md`、对应 commit；资产全配（Koleda），Jane 未配 Assist 会 warning
-- ✅ 招架/突击 Motion Warping（2026-09-07，PIE 验证通过）——插件启用 + `UMotionWarpingComponent` 装配、`ZZZ_ParryLand`/`ZZZ_RushLand` 槽语义、SkewWarp 必达 target 算法事实、`a.MotionWarping.Debug` 调试，见设计文档与 commit 27059ab
-- 🔄 Phase 3/3.5（闪避/完美闪避慢动作/震屏 HitStop/特殊技+能量/追击技/输入缓冲 Y 门控/编队·支援门控）：C++ 侧全部完成 ✅（档位模型、追击技=连段段、缓冲分流等定稿细节见架构文档 §4.13 与对应 commit）；剩**资产级待办**（人工在编辑器操作，不可从代码/git 恢复）：
-  - GA_DashAttack / GA_Koleda_Counter 补 Asset Tags `Ability.Attack.Dash.Attack` / `.Counter`（现空 → Special DashLead 静默不触发；GA_DashAttack Blocked 残留 PerfectDodge 待清）
-  - 其余角色 GA_SpecialAttack_* + 蒙太奇 + DefaultAbilities 追加（Jane 未配 Assist 会 warning）；TeamPanel；PIE 手测
-- ⬜ Phase 4（元素异常）/ 5（终结技/连携技）/ 6（AI/关卡）
+- 进度、下一步、资产级待办 → `Docs/ZZZ-Combat-Phase3-Plan.md` 顶部状态行（规则 9 收尾同步目标）；全 Phase 总览 → System-Design §五 路线图；相机进度 → Camera 文档状态行。**会话开工先读 Phase3-Plan 状态行。**
+- 已 PIE 验证功能的落地细节与坑 → System-Design 对应节 + git commit，不在本文件复述。
+
