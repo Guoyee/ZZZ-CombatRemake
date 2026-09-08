@@ -6,11 +6,13 @@
 #include "Animation/AnimInstance.h"
 #include "Attributes/ZZZAttributeSet.h"
 #include "Components/CapsuleComponent.h"
+#include "Enemies/ZZZCombatEnemy.h"
 #include "Effects/ZZZFactionGameplayEffects.h"
 #include "Effects/ZZZEnergyGameplayEffects.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "EnhancedInputComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "MotionWarpingComponent.h"
 #include "Tags/ZZZGameplayTags.h"
 #include "TimerManager.h"
 #include "InputActionValue.h"
@@ -33,7 +35,13 @@ AZZZCharacter::AZZZCharacter()
 	// isolated. Same pattern as AZZZCombatEnemy (Owner == Avatar == this).
 	ASC = CreateDefaultSubobject<UAbilitySystemComponent>(TEXT("ASC"));
 	AttributeSet = CreateDefaultSubobject<UZZZAttributeSet>(TEXT("AttributeSet"));
-	
+
+	// Motion Warping (2026-09-06): 招架支援 / 支援突击的 root motion 扭曲宿主。
+	// 组件 InitializeComponent 在 owner 为 ACharacter 时自动创建
+	// UMotionWarpingCharacterAdapter 并绑定 CMC::ProcessRootMotionPreConvertToWorld
+	// —— 只需挂组件, 无需手动 Setup。warp target 由 GA 激活时 AddOrUpdate。
+	MotionWarping = CreateDefaultSubobject<UMotionWarpingComponent>(TEXT("MotionWarping"));
+
 	bUseControllerRotationPitch = false;
 	bUseControllerRotationYaw = false;
 	bUseControllerRotationRoll = false;
@@ -53,6 +61,21 @@ AZZZCharacter::AZZZCharacter()
 	// 或自身 mesh 遮挡。Profile 未列 Camera 时走通道默认(Block), 故需显式覆盖。
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+}
+
+void AZZZCharacter::SetParryEnemy(AZZZCombatEnemy* InEnemy)
+{
+	ParryEnemy = InEnemy;
+}
+
+AZZZCombatEnemy* AZZZCharacter::GetParryEnemy() const
+{
+	return ParryEnemy.Get();
+}
+
+void AZZZCharacter::ClearParryEnemy()
+{
+	ParryEnemy.Reset();
 }
 
 void AZZZCharacter::BeginPlay()

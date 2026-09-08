@@ -104,6 +104,23 @@ protected:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Parry")
 	FName RecoverSectionName = TEXT("Recover");
 
+	// === Parry warp (招架落点, 2026-09-06) ===
+	// Motion Warping：招架突进段（蒙太奇上摆 AnimNotifyState_MotionWarping，target 名须与本
+	// 槽一致）把入场位移扭曲到"敌人打击点骨骼前方"——落点 = 敌人骨骼(默认 hand_r)位置
+	// + 敌人 Forward×ParryWarpForwardOffset。warp 窗口必须在敌人定格帧(≈0.392s)前结束。
+
+	/** warp target 名 —— 与招架蒙太奇上 AnimNotifyState_MotionWarping 的 WarpTargetName 一致。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Warp")
+	FName ParryWarpTargetName = TEXT("ZZZ_ParryLand");
+
+	/** 打击点骨骼（敌人攻击手，默认 hand_r——与 AttackTrace / 黄闪 GC 同源）。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Warp")
+	FName ParryWarpBoneName = TEXT("hand_r");
+
+	/** 落点沿敌人 Forward 前推距离(cm)——0 = 恰好落在打击点骨骼位置（角色本体≈骨骼处）。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Warp", meta = (ClampMin = "0.0"))
+	float ParryWarpForwardOffset = 40.0f;
+
 	// === Follow-up strike (支援突击 — 招架的连段段, 2026-09-05) ===
 	// 支援突击直接走通用 CanCombo 连招逻辑: 无专属追击槽/无 GetComboNext 覆写——
 	// 收势尾窗按攻击 → 组合交接经基类 GetComboNext()(= NextComboAbility, 类型已放宽为

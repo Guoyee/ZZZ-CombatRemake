@@ -364,6 +364,11 @@ void AZZZPlayerController::TryParrySwitch(AZZZCombatEnemy* ParryEnemy)
 	FaceEnemyRotation.Roll = 0.0f;
 	NextMember->SetActorLocationAndRotation(EntryLocation, FaceEnemyRotation);
 
+	// ── 4.5. 招架目标敌人写入新人物 (2026-09-06) ──
+	// 生命周期见 AZZZCharacter::ParryEnemy 注释：招架 GA 激活时读它布落点 warp target，
+	// 支援突击 GA 激活时取走并清空，招架 GA EndAbility 兜底清空。
+	NextMember->SetParryEnemy(ParryEnemy);
+
 	// ── 5. Enter immediately (同普通切换时序; 不播 EnterMontage ──
 	// 入场演出 = 招架 GA 的招架蒙太奇, 激活在步骤 7) ──
 	bIsSwitching = true;

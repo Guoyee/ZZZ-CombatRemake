@@ -18,6 +18,8 @@ class UCameraComponent;
 class USpringArmComponent;
 class UAnimMontage;
 class UMaterialInstanceDynamic;
+class UMotionWarpingComponent;
+class AZZZCombatEnemy;
 class AZZZCharacter;  // 供下方切换委托自引用
 
 /** 旧人物退场完成（已隐藏）时广播——PC 绑定以清除 bIsSwitching 守卫。 */
@@ -36,6 +38,23 @@ public:
 	bool IsEliminated() const;
 
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
+	/** Motion Warping 组件（招架落点 / 支援突击穿敌 warp 的宿主，2026-09-06）。 */
+	UMotionWarpingComponent* GetMotionWarping() const { return MotionWarping; }
+
+	// === Assist parry target (招架目标敌人, 2026-09-06) ===
+
+	/**
+	 * 本次招架的目标敌人引用。生命周期 (2026-09-06 定稿)：
+	 *   PC TryParrySwitch → SetParryEnemy（激活招架 GA 前写入）→ 招架 GA 激活时读它
+	 *   布落点 warp target（打击点骨骼前方）→ 支援突击 GA（UZZZFollowUpAttack）激活时
+	 *   取走并 Clear（防后续 DashAttack 等 FollowUpAttack 误触发穿敌 warp）→
+	 *   招架 GA EndAbility 兜底 Clear（链未接上时清残留）。
+	 * TWeakObjectPtr：敌人销毁（阵亡）后自动失效，不悬垂。
+	 */
+	void SetParryEnemy(AZZZCombatEnemy* InEnemy);
+	AZZZCombatEnemy* GetParryEnemy() const;
+	void ClearParryEnemy();
 
 	/** Mirrors the TimeDilation attribute to CustomTimeDilation (same as AZZZCombatEnemy). */
 	void OnTimeDilationChanged(const FOnAttributeChangeData& Data);
@@ -219,6 +238,14 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UZZZAttributeSet> AttributeSet;
+
+	/** Motion Warping 组件 —— 招架 / 突击 warp target 的宿主（2026-09-06）。 */
+	UPROPERTY(VisibleAnywhere, Category = "MotionWarping")
+	TObjectPtr<UMotionWarpingComponent> MotionWarping;
+
+	/** 招架目标敌人（Transient：运行时数据不落盘）。 */
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AZZZCombatEnemy> ParryEnemy;
 
 private:
 	void InitAbilitySystem();

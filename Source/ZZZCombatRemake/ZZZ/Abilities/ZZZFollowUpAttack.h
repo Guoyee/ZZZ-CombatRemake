@@ -78,4 +78,20 @@ protected:
 
 	UPROPERTY()
 	TObjectPtr<UAbilityTask_RotateToTarget> RotateToTargetTask;
+
+	// === Assist-rush warp (支援突击穿敌, 2026-09-06) ===
+	// 仅当激活时角色持有招架目标敌人（PC TryParrySwitch 写入）才生效——GA_AssistRush
+	// 是招架连段段, 穿敌 warp 是它的专属语义; 普攻/闪避追击(同基类)无招架敌人引用,
+	// 不受影响。目标 = 敌人正后方(敌位置 - 敌Forward×RushPassDistance), 旋转 = 位移方向
+	// (穿敌后保持冲刺朝向)。蒙太奇上须摆 AnimNotifyState_MotionWarping(target 名与本槽
+	// 一致) + AnimNotifyState_CollisionPassThrough(穿敌碰撞, WindowTag=State.PassThrough
+	// 顺带停 RotateToTarget 索敌转向)。
+
+	/** warp target 名 —— 与突击蒙太奇上 AnimNotifyState_MotionWarping 的 WarpTargetName 一致。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Warp")
+	FName RushWarpTargetName = TEXT("ZZZ_RushLand");
+
+	/** 突击落点距敌人后背的距离(cm)：落点 = 敌位置 - 敌Forward×RushPassDistance。 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Warp", meta = (ClampMin = "50.0"))
+	float RushPassDistance = 200.0f;
 };

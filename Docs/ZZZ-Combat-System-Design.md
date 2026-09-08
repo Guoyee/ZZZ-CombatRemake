@@ -216,6 +216,11 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - **双轨兜底**：`ParryPending`/`AttackWindow` 由 E 攻击 GA EndAbility 清理；`CanCombo`/`CanBuffer` 由基类 EndAbility 统一清理（2026-09-05 集中）。定格期间大招架蒙太奇提前 blend-out 的病根 = 源动画实际时长 < 蒙太奇段长（资产问题，2026-09-05 定位）。
 - 基类 `TrySetupComboHandoff()` 2026-09-05 起 = **双窗口默认件**（WaitInputBuffer + WaitCombo 一并武装）——技能默认支持 inputbuffer + combo，蒙太奇摆两窗即生效。
 
+**Motion Warping 落地（2026-09-07，PIE 验证通过；插件 = 引擎 `Animation/MotionWarping`，.uproject 启用 + `AZZZCharacter` 挂 `UMotionWarpingComponent`——owner 为 ACharacter 时组件自动建 CharacterAdapter 绑 `CMC::ProcessRootMotionPreConvertToWorld`）**：
+
+- **敌人引用生命周期**：PC `TryParrySwitch` 摆位后把目标敌人写入新成员（`AZZZCharacter::SetParryEnemy`，TWeakObjectPtr，防销毁悬垂）→ 招架 GA（`UZZZAssistDefensive`）激活时读它写落点 warp target `ZZZ_ParryLand`（`AddOrUpdateWarpTargetFromLocationAndRotation`：落点 = 敌 `hand_r` 打击点骨骼 + 敌Forward×`ParryWarpForwardOffset`(40cm 默认, GA 可配)，yaw 面敌）→ 支援突击 GA（`UZZZFollowUpAttack` 族——普攻/闪避追击同基类但无该引用, 天然不受影响）激活时**取走并清空**该引用并写 `ZZZ_RushLand`（敌位置 − 敌Forward×`RushPassDistance`(200cm 默认)，旋转 = 位移方向，穿敌后保持冲刺朝向）→ 招架 GA `EndAbility` 兜底清空（链未接上/被中断防残留误触发）。穿敌碰撞不在 C++——突击蒙太奇段摆 `CollisionPassThrough` notify 盖全程（授 `State.PassThrough` 停 RotateToTarget 索敌转向）；`GA_Koleda_AssistRush` 关 `bRotateToTarget`（招架姿势已面敌，warp 负责穿后朝向）。
+- **warp 窗口（资产侧）** = 蒙太奇上 `AnimNotifyState_MotionWarping`（SkewWarp 修饰器），`WarpTargetName` 必须与 C++ 槽名一致（`ZZZ_ParryLand` 在招架突进段 / `ZZZ_RushLand` 在突击冲刺段）。**算法事实（5.8 引擎源码）**：SkewWarp 每帧按「剩余到目标距离 ÷ 窗口内剩余 root motion」重缩放位移 → 窗口结束时**必落 target**（动画位移长短不影响到达——动画"太短"只表现为速度变快）；窗口段无 root motion 时走 Lerp 补位移路径（窗口起点→target，同样必达）；`MaxSpeedClampRatio` 须 0（>0 限速 → 到不了位）；warp 只改每帧位移不改动画播放时长。调试：`a.MotionWarping.Debug 2` / `.Debug.Target 1`。
+
 ### 4.10 连携技 Director（Phase 5）
 
 目标进入 `State.Stun` → `AZZZCombatDirector`（GameState 子组件）调度：暂停敌人 AI（SlowMotion）+ 非活跃队友 IgnoreInput/Invulnerable → 连携选择 UI → `TryActivateAbilitiesByTag(Ability.ChainAttack)` → `AbilityTask_ChainCamera` 镜头 Lerp → 最多 3 次，已行动角色不可重复。

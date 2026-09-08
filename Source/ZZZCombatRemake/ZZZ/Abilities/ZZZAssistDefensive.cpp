@@ -5,9 +5,12 @@
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
+#include "Enemies/ZZZCombatEnemy.h"
 #include "GameFramework/Character.h"
 #include "GameplayEffect.h"
+#include "MotionWarpingComponent.h"
 #include "Tags/ZZZGameplayTags.h"
+#include "ZZZCharacter.h"
 #include "ZZZCombatRemake.h"
 
 UZZZAssistDefensive::UZZZAssistDefensive()
@@ -45,6 +48,34 @@ void UZZZAssistDefensive::ActivateAbility(
 		FGameplayEventMulticastDelegate& EventDelegate =
 			EventASC->GenericGameplayEventCallbacks.FindOrAdd(ParryEventTag);
 		ParryImpactHandle = EventDelegate.AddUObject(this, &UZZZAssistDefensive::OnParryImpact);
+	}
+
+	// Motion Warping 落点 (2026-09-06): 招架突进段的 root motion 被扭曲到"敌人打击点
+	// 骨骼前方"——落点 = 敌人 hand_r(可配) + 敌人 Forward×ParryWarpForwardOffset,
+	// 朝向 = 面向敌人(仅 yaw)。目标在蒙太奇开始前写入, 蒙太奇上 AnimNotifyState_
+	// MotionWarping 窗口(须与 ParryWarpTargetName 一致)在窗口期内逐帧扭曲。
+	// 敌人引用由 PC TryParrySwitch 写入角色(SetParryEnemy), 本 GA 只读不消费——
+	// 由支援突击 GA 取走, 本 GA EndAbility 兜底清空。
+	if (AZZZCharacter* Owner = Cast<AZZZCharacter>(GetAvatarActorFromActorInfo()))
+	{
+		if (AZZZCombatEnemy* ParryEnemy = Owner->GetParryEnemy())
+		{
+			if (UMotionWarpingComponent* MotionWarping = Owner->GetMotionWarping())
+			{
+				if (USkeletalMeshComponent* EnemyMesh = ParryEnemy->GetMesh())
+				{
+					const FVector EnemyForward = ParryEnemy->GetActorForwardVector();
+					const FVector WarpLocation =
+						EnemyMesh->GetSocketLocation(ParryWarpBoneName)
+						+ EnemyForward * ParryWarpForwardOffset;
+					FRotator FaceEnemy = (ParryEnemy->GetActorLocation() - WarpLocation).Rotation();
+					FaceEnemy.Pitch = 0.0f;
+					FaceEnemy.Roll = 0.0f;
+					MotionWarping->AddOrUpdateWarpTargetFromLocationAndRotation(
+						ParryWarpTargetName, WarpLocation, FaceEnemy);
+				}
+			}
+		}
 	}
 
 	// Parry montage + EndAbility wiring lives in the base class (Task 1a).
@@ -159,6 +190,14 @@ void UZZZAssistDefensive::EndAbility(
 	if (UAbilitySystemComponent* ASC = GetAbilitySystemComponentFromActorInfo())
 	{
 		ASC->RemoveLooseGameplayTag(FZZZGameplayTags::Get().Effect_Ability_CanCombo);
+	}
+
+	// 招架目标敌人兜底清空 (2026-09-06): 链正常接上时支援突击 GA 已在激活时取走并清空
+	// (此处重复清空是 no-op); 链未接上/招架被中断时清掉残留, 防止后续任意 FollowUpAttack
+	// (如普攻连段后的冲刺攻击)误触发穿敌 warp。
+	if (AZZZCharacter* Owner = Cast<AZZZCharacter>(GetAvatarActorFromActorInfo()))
+	{
+		Owner->ClearParryEnemy();
 	}
 
 	// State.Invulnerable needs no manual removal — ActivationOwnedTags.

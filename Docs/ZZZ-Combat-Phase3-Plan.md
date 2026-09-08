@@ -29,6 +29,7 @@
 - **2026-09-04 招架（AssistDefensive）C++ 全套（未提交；资产待做）**：见「三、进行中」清单 + 架构文档 §4.9.1。
 - **2026-09-05 敌人失衡恢复（PIE 验证通过）**：`UZZZGameplayEffect_Stun` 由 Infinite 改 **Duration 5.0s 自过期**；`ZZZAttributeSet` 失衡判据由 `bIsStunned` bool 改查 `State.Stun` tag 在场（bool 感知不到 GE 过期、会堵死二次失衡，已删）。原症状：Daze 满 → 永久眩晕 → 敌人永不恢复行动（普攻命中打断后"卡死"表象实为此，命中取消本身每次正常恢复——PIE 连续打断几十次均恢复）。
 - **2026-09-05 调试事实**：PIE `showdebug AbilitySystem` 只显示**玩家自身** ASC（不随准星切目标）——核对阵营 tag（State.Player/Enemy）勿用它看敌人；敌人实测恒为 State.Alive/State.Enemy（失衡时 + State.Stun），代码无任何授敌 State.Player 的路径。
+- **2026-09-07 招架/突击 Motion Warping（PIE 验证通过）**：引擎 `Animation/MotionWarping` 插件启用（.uproject + Build.cs）+ `AZZZCharacter` 挂 `UMotionWarpingComponent`（自动建 CharacterAdapter）。**敌人引用生命周期**：PC `TryParrySwitch` 摆位后 `SetParryEnemy` → 招架 GA 激活写落点 warp target `ZZZ_ParryLand`（= 敌 `hand_r` 骨骼 + 敌Forward×`ParryWarpForwardOffset`(40)，yaw 面敌）→ 突击 GA（FollowUpAttack 族）激活时**取走并清空** + 写 `ZZZ_RushLand`（= 敌正后方 `RushPassDistance`(200)，旋转 = 位移方向）→ 招架 GA EndAbility 兜底清。穿敌碰撞 = 突击蒙太奇 `CollisionPassThrough` 盖全程（GA_AssistRush 关 `bRotateToTarget`）。warp 窗口 = 蒙太奇 `AnimNotifyState_MotionWarping`（target 名须与 C++ 槽一致）；⚠ `MaxSpeedClampRatio` 保持 0。算法事实：SkewWarp 每帧按「剩余到目标距离 ÷ 剩余 root motion」重归一化 → 窗口末必落 target，动画位移长短不影响到达；观感速度 ∝ 目标距离/窗口时长。
 
 ## 三、进行中
 
