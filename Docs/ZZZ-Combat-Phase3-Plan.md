@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 招架(弹刀) / 突击 / 编队切换 + 3.5 时间管理 + 特殊技/能量
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel/突击 C++ 未做（并入后续排程，见 §四）；**2026-09-08 排程决策：元素/异常不做（仅玩法相关，与角色表现无关）；后续顺序 = HUD（吸收 TeamPanel）→ 连携技 → 大招 → 特效全量铺底**
+> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel/突击 C++ 未做（并入后续排程，见 §四）；**2026-09-08 排程决策：元素/异常不做（仅玩法相关，与角色表现无关）；后续顺序 = HUD（TeamPanel/技能按钮）+ 敌人头顶条（血条/失衡，非 HUD）→ 连携技 → 大招 → 特效全量铺底**；**2026-09-08 屏幕 HUD ✅ 实施 + PIE 验证**（TeamPanel 槽序旋转/头像/血条/能量/HP 数值 + 技能按钮圆底盘/灰度就绪态 + 开局预加载全部小队成员；设计/资产见 `ZZZ-UI-Design.md`，MCP 配方见 `ZZZ-MCP-Pitfalls.md`）——**下一步 = 敌人头顶条**
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -50,13 +50,16 @@
 ### 未做
 
 - **突击（连携突击）C++**：切换自动判定只实现了 AttackWindow→招架分支；Staggered(600)→突击分支（`UZZZAssistOffensive` 或同路径）未写；`SwitchToCharacter(Direction)` 参数化未做
-- **TeamPanel**（Task #6）
+- ~~**TeamPanel**（Task #6）~~ ✅ 2026-09-08（含头像/数值/开局预加载，见 `ZZZ-UI-Design.md`）
+- **敌人头顶条**：C++ ✅（`AZZZCombatEnemy` 挂 `HeadStatus` WidgetComponent + `HeadWidgetClass`/`DisplayName`/`HeadBarHeight` + `UZZZEnemyHeadWidget` 绑定函数，随本次提交入库）；**WBP_EnemyHead 未建** → 排程下一步
 
 ## 四、后续排程（2026-09-08 定序，替代旧 Task 依赖序）
 
 **决策**：元素/异常（原 Phase 4）不做——仅玩法相关、与角色表现无关。按依赖与验收依赖定序：
 
-1. **HUD**（吸收 Task #6 TeamPanel）：小队按钮（override `OnPossess` → RefreshSquad 替代延迟一帧；Entry 绑属性变化 delegate（不轮询）+ State.Dead 灰显）+ 技能按钮 + 敌人血条/失衡条。前提定夺：敌人目标选取（准星射线 or 复用 FindNearestEnemy 判定链）；大招槽先留空位（Decibel 未落地）。
+1. **HUD & 敌人头顶条**（吸收 Task #6 TeamPanel；屏幕 HUD 与头顶条是两个载体）：
+   - **屏幕 HUD** ✅ 2026-09-08 完成（小队栏槽序旋转 + 头像 + 血/能量 + HP 数值 + 技能按钮灰度就绪态；`OnPossess → RefreshSquad` + 属性 delegate 不轮询；**开局预加载全部成员**保证每槽实时数据）。细节见 `ZZZ-UI-Design.md`。
+   - **敌人头顶条**（血条/失衡条，**非 HUD**）＝ 每敌人挂 UWidgetComponent 头顶跟随——敌人独立 ASC 天然 per-pawn，无目标选取问题；绑属性变化 delegate（不轮询）；前提定夺：显示/隐藏与朝向规则（相机朝向跟随、State.Dead 等隐藏条件）。
 2. **连携技**（替代旧 Task #3 突击方向——原 Staggered 自动判定废弃）：复用失衡（`State.Stun` tag 判据）/冻结 GE/编队切换/相机特写预留全链；前提定夺：失衡→连携节奏（现 `_Stun` 5s 偏长，按怪种调，原"Phase 4+ 预备"项）；镜头特写模板在此趟出。
 3. **大招**：新地基 = Decibel 全队共享宿主（宿主位置定夺——PlayerState 与 GameState 两处文档口径不一致，开工统一）；终结镜头复用 2 的特写基建。
 4. **特效全量铺底**：旧技能 + 2/3 新技能一次覆盖不返工；接入 = GameplayCue + Niagara（R20 镜像 + 三档 cue tag + 打击帧 per-instance 开关基建已就绪）；试点可在 2/3 开发期先行立模板。
@@ -91,4 +94,4 @@
 - `ZZZ/Animation/ZZZAnimNotify_EnemyParryImpact`、`ZZZAnimNotify_EnemyDodgeSlow`（新，敌人蒙太奇消费 notify）
 - `ZZZ/Effects/ZZZStatusGameplayEffects`（_Stagger/_Stun(5s)/_Dead/_Alive/_ParryStop 等载体）
 - `ZZZ/ZZZCharacter`（输入门控 + SwitchOut 接驳 + 招架期禁普攻）
-- 新建（待做）：`ZZZ/Abilities/ZZZAssistOffensive`；`ZZZ/UI/ZZZTeamPanelWidget`、`ZZZTeamPanelEntryWidget`
+- 新建（待做）：`ZZZ/Abilities/ZZZAssistOffensive`；`ZZZ/UI/ZZZPlayerHUDWidget`、`ZZZTeamPanelWidget`、`ZZZTeamPanelEntryWidget`、`ZZZSkillButtonWidget`（✅ 2026-09-08 已建，HUD 全套）

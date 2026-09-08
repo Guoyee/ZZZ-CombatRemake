@@ -12,6 +12,8 @@
 
 class UAbilitySystemComponent;
 class UZZZAttributeSet;
+class UWidgetComponent;
+class UZZZEnemyHeadWidget;
 class AZZZCharacter;
 
 /**
@@ -134,6 +136,30 @@ protected:
 	/** Base defense power. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ZZZ|Stats")
 	float InitialDefense = 10.0f;
+
+	// === 敌人头顶状态条 (2026-09-08, UI-Design §三) ===
+
+	/**
+	 * Screen-space WidgetComponent 挂点——浮于头部上方, 自动面向相机 (飘字先例)。
+	 * Widget 实例由 BeginPlay 按 HeadWidgetClass 创建; 未配置 = 无 widget 不渲染,
+	 * 旧 BP 无需任何改动。
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "ZZZ|UI")
+	TObjectPtr<UWidgetComponent> HeadStatus;
+
+	/** 头顶条 Widget 类 (WBP_EnemyHead——UZZZEnemyHeadWidget 子类), 每个敌人 BP 上填。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ZZZ|UI")
+	TSubclassOf<UZZZEnemyHeadWidget> HeadWidgetClass;
+
+	/** 名字条显示名 (可留空 → WBP 自行折叠名字区)。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ZZZ|UI")
+	FText DisplayName;
+
+	/**
+	 * 挂点相对根高度 (cm)。初值贴合 Mannequin, 首次 PIE 后 ±30 微调 (UI-Design §八)。
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ZZZ|UI")
+	float HeadBarHeight = 190.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;

@@ -283,7 +283,7 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 | 3 | 闪避/完美闪避/弹刀/突击/编队切换/特殊技+能量 | ✅（2026-09-08 完结；收尾细节见 Phase3 计划） |
 | 3.5 | 时间管理（SlowMotion/HitStop/震屏） | ✅（并入 Phase 3） |
 | 4 | 元素 & 异常 | ❌ 不做（2026-09-08 决策：仅玩法相关，与角色表现无关） |
-| 5 | HUD / 连携技 / 大招 / 特效（原终结技&连携技 Director + Decibel + ChainCamera 范围细化） | ⬜ 排程（2026-09-08）：HUD（含 TeamPanel/敌人血条失衡条）→ 连携技 → 大招（Decibel）→ 特效铺底，见 Phase3 计划 §四 |
+| 5 | HUD / 连携技 / 大招 / 特效（原终结技&连携技 Director + Decibel + ChainCamera 范围细化） | ⬜ 排程（2026-09-08）：HUD（TeamPanel/技能按钮）+ 敌人头顶条（血条/失衡，UWidgetComponent 非 HUD）→ 连携技 → 大招（Decibel）→ 特效铺底，见 Phase3 计划 §四 |
 | 6 | AI & 关卡（StateTree 升级/波次/HUD 合成） | ⬜ |
 
 ## 六、数据驱动设计

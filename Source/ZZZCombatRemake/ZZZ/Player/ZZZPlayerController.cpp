@@ -20,6 +20,7 @@
 #include "ZZZDamageNumberPool.h"
 #include "ZZZDamageNumberWidget.h"
 #include "ZZZPlayerCameraManager.h"
+#include "ZZZPlayerHUDWidget.h"
 
 AZZZPlayerController::AZZZPlayerController(const FObjectInitializer& ObjectInit)
 	: Super(ObjectInit)
@@ -82,6 +83,14 @@ void AZZZPlayerController::OnPossess(APawn* InPawn)
 			}
 		}
 	}
+
+	// Squad HUD (2026-09-08, UI-Design §2.2): every possess — the initial one,
+	// normal switches, and parry support — refreshes the team panel (slot
+	// rotation + highlight + rebind) and the skill button (current member's
+	// energy). Possess is the single signal both switch paths share, so no
+	// extra broadcast is needed. The very first possess can run before the HUD
+	// exists (PC BeginPlay) — CreateHUD covers that case with its own refresh.
+	RefreshHUD();
 }
 
 void AZZZPlayerController::BeginPlay()
@@ -105,6 +114,36 @@ void AZZZPlayerController::BeginPlay()
 	// spawning. Widget class comes from the PC asset (WBP_DamageNumber).
 	DamageNumberPool = NewObject<UZZZDamageNumberPool>(this);
 	DamageNumberPool->Initialize(GetWorld(), DamageNumberPoolSize, DamageNumberWidgetClass);
+
+	// 预加载所有小队成员（2026-09-08）：为 roster 里每个职业各准备一个隐藏实例
+	// ——设计口径是"成员只生成一次、隐藏而非销毁"，但此前开局只生成当前角色，
+	// 其余槽位在首次切换前没有实例（HUD 只能显示占位）。开局全部生成 → 每个槽
+	// 都有真实成员，头像/血条/能量/名字全实时，且后台回能照常（隐藏成员仍 Tick）。
+	// 当前操作角色由 GameMode 出生并已 possess → 直接登记，避免重复生成。
+	AZZZCharacter* InitialPawn = Cast<AZZZCharacter>(GetPawn());
+	if (InitialPawn && SquadClasses.Contains(InitialPawn->GetClass()))
+	{
+		SquadMembers.AddUnique(InitialPawn);
+	}
+	for (const TSubclassOf<AZZZCharacter>& SquadClass : SquadClasses)
+	{
+		if (!SquadClass || (InitialPawn && SquadClass == InitialPawn->GetClass()))
+		{
+			continue;
+		}
+		if (AZZZCharacter* Member = GetOrSpawnSquadMember(SquadClass))
+		{
+			// 未登场成员保持隐藏 + 关碰撞（与退场后状态一致；进场由 BeginSwitchIn 恢复）。
+			Member->SetActorHiddenInGame(true);
+			Member->SetActorEnableCollision(false);
+		}
+	}
+
+	// Squad HUD (2026-09-08): CreateWidget + AddToViewport, then refresh once —
+	// the initial Possess (GameMode RestartPlayer) can run BEFORE this BeginPlay
+	// (OnPossess skipped for lack of a HUD), so GetPawn() is pulled here. Every
+	// later possess refreshes from OnPossess instead.
+	CreateHUD();
 }
 
 void AZZZPlayerController::SetupInputComponent()
@@ -493,4 +532,101 @@ bool AZZZPlayerController::IsSquadClassEliminated(UClass* CharacterClass) const
 		}
 	}
 	return false;
+}
+
+UClass* AZZZPlayerController::GetSquadRosterClass(int32 RosterIndex) const
+{
+	return SquadClasses.IsValidIndex(RosterIndex) ? SquadClasses[RosterIndex] : nullptr;
+}
+
+AZZZCharacter* AZZZPlayerController::GetSquadMemberByClass(UClass* RosterClass) const
+{
+	if (!RosterClass)
+	{
+		return nullptr;
+	}
+
+	// SquadMembers 按“首次登场/注册”序追加——不假设与 SquadClasses index 对齐,
+	// 一律按类查找（UI-Design §一.5 只约定轮转序真源, 不约束存储形态）。
+	for (const TObjectPtr<AZZZCharacter>& Member : SquadMembers)
+	{
+		if (Member && Member->GetClass() == RosterClass)
+		{
+			return Member;
+		}
+	}
+
+	// 兜底（2026-09-08）：GameMode 出生的起始成员在首次切换前**尚未注册进
+	// SquadMembers**（注册发生在 SwitchToNextCharacter / TryParrySwitch）——
+	// 开局 HUD 刷新时全部槽位会拿到 null（头像/血条/能量条全空）。世界扫描
+	// 一次补上，口径同 IsSquadClassEliminated。
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AZZZCharacter> It(World); It; ++It)
+		{
+			AZZZCharacter* Candidate = *It;
+			if (Candidate && Candidate->GetClass() == RosterClass)
+			{
+				return Candidate;
+			}
+		}
+	}
+	return nullptr;
+}
+
+int32 AZZZPlayerController::GetCurrentSquadIndex(AZZZCharacter* CurrentPawn) const
+{
+	if (!CurrentPawn)
+	{
+		return INDEX_NONE;
+	}
+
+	for (int32 i = 0; i < SquadClasses.Num(); ++i)
+	{
+		if (SquadClasses[i] == CurrentPawn->GetClass())
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
+}
+
+void AZZZPlayerController::CreateHUD()
+{
+	if (HUDWidget)
+	{
+		return;
+	}
+
+	if (!HUDWidgetClass)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning,
+			TEXT("CreateHUD: HUDWidgetClass not configured (set WBP_ZZZHUD on the PC asset)."));
+		return;
+	}
+
+	HUDWidget = CreateWidget<UZZZPlayerHUDWidget>(this, HUDWidgetClass);
+	if (!HUDWidget)
+	{
+		UE_LOG(LogZZZCombatRemake, Error,
+			TEXT("CreateHUD: failed to create '%s'."), *GetNameSafe(HUDWidgetClass));
+		return;
+	}
+
+	HUDWidget->AddToViewport();
+	RefreshHUD();
+}
+
+void AZZZPlayerController::RefreshHUD()
+{
+	if (!HUDWidget)
+	{
+		return;
+	}
+
+	// 无玩家 pawn（PIE 启动空档/编辑器调试态）→ 跳过, 下一次 Possess 再刷。
+	if (AZZZCharacter* CurrentPawn = Cast<AZZZCharacter>(GetPawn()))
+	{
+		HUDWidget->RefreshSquad(this, CurrentPawn);
+	}
 }

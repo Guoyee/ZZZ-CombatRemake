@@ -3,12 +3,14 @@
 #include "ZZZCombatEnemy.h"
 #include "AbilitySystemComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "Components/WidgetComponent.h"
 #include "Effects/ZZZFactionGameplayEffects.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
+#include "UI/ZZZEnemyHeadWidget.h"
 #include "ZZZAttributeSet.h"
 #include "ZZZCharacter.h"
 #include "Tags/ZZZGameplayTags.h"
@@ -42,6 +44,20 @@ AZZZCombatEnemy::AZZZCombatEnemy()
 	// 显式 Ignore, 敌人挡在镜头与玩家之间时镜头看穿, 只被世界几何遮挡。
 	GetCapsuleComponent()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	GetMesh()->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+
+	// 敌人头顶状态条 (UI-Design §三, 2026-09-08): Screen 空间自动面向相机——
+	// 无需任何逐帧旋转代码 (飘字 DamageWidget 同款先例)。挂根 (胶囊) 上方
+	// HeadBarHeight; Widget 实例延迟到 BeginPlay 按 HeadWidgetClass 创建
+	// (构造期不创建 UObject——规则 2 GE CDO 时序纪律同源)。
+	HeadStatus = CreateDefaultSubobject<UWidgetComponent>(TEXT("HeadStatus"));
+	HeadStatus->SetupAttachment(GetRootComponent());
+	HeadStatus->SetRelativeLocation(FVector(0.0f, 0.0f, HeadBarHeight));
+	HeadStatus->SetWidgetSpace(EWidgetSpace::Screen);
+	// 固定像素画布 (同 DamageWidget 160x48 先例): WBP_EnemyHead 在画布内锚定布局;
+	// 首测按观感微调 (UI-Design §八)。
+	HeadStatus->SetDrawSize(FVector2D(240.0f, 84.0f));
+	HeadStatus->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HeadStatus->SetWindowFocusable(false);
 }
 
 UAbilitySystemComponent* AZZZCombatEnemy::GetAbilitySystemComponent() const
@@ -115,6 +131,20 @@ void AZZZCombatEnemy::BeginPlay()
 			}
 		}
 
+		// 敌人头顶状态条 (UI-Design §三): SetWidgetClass 在组件已 BeginPlay 后即刻
+		// CreateWidget → 把本敌 ASC + 配置名交给 C++ widget (BindStatus 绑
+		// Health/Daze delegate 并拉现值; 展示全在 WBP_EnemyHead)。旧 BP 未填
+		// HeadWidgetClass = 组件空渲染无警告, 填了即显示。
+		if (HeadWidgetClass && HeadStatus && !HeadStatus->GetWidget())
+		{
+			HeadStatus->SetWidgetClass(HeadWidgetClass);
+			if (UZZZEnemyHeadWidget* HeadWidget =
+				Cast<UZZZEnemyHeadWidget>(HeadStatus->GetWidget()))
+			{
+				HeadWidget->BindStatus(AbilitySystemComponent, DisplayName);
+			}
+		}
+
 		// Bind health change delegate for MVP logging
 		AbilitySystemComponent->GetGameplayAttributeValueChangeDelegate(
 			UZZZAttributeSet::GetHealthAttribute()).AddUObject(
@@ -135,6 +165,13 @@ void AZZZCombatEnemy::OnHealthChanged(const FOnAttributeChangeData& Data)
 {
 	UE_LOG(LogZZZCombatRemake, Log,
 		TEXT("[%s] Health: %.0f → %.0f"), *GetName(), Data.OldValue, Data.NewValue);
+
+	// 头顶条整体隐藏 (UI-Design §3.2): HP==0 —— 死亡必经伤害、由本事件触发; 若未来
+	// 出现"非伤害归零"用例再改绑 State.Dead tag。
+	if (Data.NewValue <= 0.0f && HeadStatus)
+	{
+		HeadStatus->SetVisibility(false);
+	}
 }
 
 void AZZZCombatEnemy::OnTimeDilationChanged(const FOnAttributeChangeData& Data)

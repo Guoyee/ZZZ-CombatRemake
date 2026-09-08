@@ -13,6 +13,7 @@ class AZZZCharacter;
 class AZZZCombatEnemy;
 class UZZZDamageNumberWidget;
 class UZZZDamageNumberPool;
+class UZZZPlayerHUDWidget;
 
 /**
  * PlayerController for ZZZ combat.
@@ -49,6 +50,27 @@ public:
 	/** Pooled damage number accessor (used by the GameplayCue). */
 	UZZZDamageNumberPool* GetDamageNumberPool() const { return DamageNumberPool; }
 
+	// === Squad roster accessors (HUD 只读, 2026-09-08) ===
+	// UI-Design §一.5: 轮转序真源 = SquadClasses, TeamPanel 槽序与切人逻辑共用。
+	// 只读不改存储形态; 槽序旋转/实例解析由 Widget 侧按类完成 (SquadMembers 按
+	// 首次登场/注册序追加, 不可假设与 SquadClasses index 对齐——一律按类查找)。
+
+	/** 队伍人数 N（roster 大小 = 面板槽数上限）。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Squad")
+	int32 GetSquadRosterSize() const { return SquadClasses.Num(); }
+
+	/** Roster 下标 → 职业类（越界 → nullptr）。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Squad")
+	UClass* GetSquadRosterClass(int32 RosterIndex) const;
+
+	/** 该职业的已登场实例（从未切换进场 → nullptr；隐藏成员照常返回——属性实时）。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Squad")
+	AZZZCharacter* GetSquadMemberByClass(UClass* RosterClass) const;
+
+	/** 当前操作角色在轮转序的下标（不在 roster → INDEX_NONE）。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Squad")
+	int32 GetCurrentSquadIndex(AZZZCharacter* CurrentPawn) const;
+
 protected:
 	UPROPERTY(EditAnywhere, Category = "Input|Input Mappings")
 	TArray<UInputMappingContext*> DefaultMappingContexts;
@@ -71,6 +93,12 @@ protected:
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|DamageNumber")
 	int32 DamageNumberPoolSize = 32;
 
+	// === Squad HUD (2026-09-08, UI-Design §2) ===
+
+	/** 屏幕 HUD 根 WBP（WBP_ZZZHUD — UZZZPlayerHUDWidget 子类），BP_ZZZPlayerController 上填。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|HUD")
+	TSubclassOf<UZZZPlayerHUDWidget> HUDWidgetClass;
+
 	virtual void BeginPlay() override;
 	virtual void SetupInputComponent() override;
 
@@ -85,12 +113,21 @@ protected:
 private:
 	UPROPERTY()
 	TObjectPtr<UZZZDamageNumberPool> DamageNumberPool;
-	/** Spawned squad instances, index-aligned with SquadClasses (hidden while inactive). */
+	/** 屏幕 HUD 实例（CreateHUD 一次创建, 会话期复用）。 */
+	UPROPERTY(Transient)
+	TObjectPtr<UZZZPlayerHUDWidget> HUDWidget;
+	/** Spawned squad instances (hidden while inactive) — 按首次登场/注册序追加, 勿假设与 SquadClasses index 对齐。 */
 	UPROPERTY()
 	TArray<TObjectPtr<AZZZCharacter>> SquadMembers;
 
 	/** Find a live instance of CharacterClass, or spawn one and remember it. */
 	AZZZCharacter* GetOrSpawnSquadMember(UClass* CharacterClass);
+
+	/** 屏幕 HUD：CreateWidget + AddToViewport（BeginPlay 锚点——首次 Possess 可能早于 PC BeginPlay，见 RefreshHUD）。 */
+	void CreateHUD();
+
+	/** 刷新 Squad HUD（槽序/高亮/能量重绑全由 Possess 驱动）；HUD 未建或无玩家 pawn 时静默。 */
+	void RefreshHUD();
 
 	/** True if a live instance of CharacterClass currently carries State.Dead. */
 	bool IsSquadClassEliminated(UClass* CharacterClass) const;

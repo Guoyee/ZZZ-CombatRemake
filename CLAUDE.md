@@ -7,12 +7,15 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 - `Docs/ZZZ-Combat-System-Design.md` — 唯一权威架构设计，开发前必读
 - `Docs/ZZZ-Combat-Phase3-Plan.md` — 当前实施进度与待办（Phase 3 进行中）
 - `Docs/ZZZ-Camera-Architecture.md` — 相机架构定稿（GameplayCameras manager 模式 + 切人过渡 + 特写预留），开发前必读
+- `Docs/ZZZ-UI-Design.md` — HUD（TeamPanel/技能按钮）与敌人头顶条设计定稿，UI 开发前必读
+- `Docs/ZZZ-MCP-Pitfalls.md` — 通过 MCP 写 UI 资产的坑清单与收尾清单，写前必读
 - `Docs/archive/` — 旧版完整文档备份，**勿读**（仅人工查证历史时使用）
 
 ## 构建
 
-命令（生成工程文件 / 构建编辑器目标 / 打开项目）见 `Docs/Setup.md`。
-纪律：小改动可用 Live Coding；**每个实施 Task 完成即构建 + PIE 手测，不跨 Task 堆积**（新增 UCLASS / UPROPERTY 必须完整构建，UHT 重跑）。
+- 引擎根：`D:/Program Files/Epic Games/UE_5.8`（引擎工具 / 源码 / 启动编辑器路径均以此为前缀，查引擎头文件同源）。
+- 命令（生成工程文件 / 构建编辑器目标 / 打开项目）见 `Docs/Setup.md`。
+- 纪律：小改动可用 Live Coding；**每个实施 Task 完成即构建 + PIE 手测，不跨 Task 堆积**（新增 UCLASS / UPROPERTY 必须完整构建，UHT 重跑）。
 
 ## 架构速览
 
@@ -40,9 +43,10 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 
 ## MCP 资产操作规则
 
-- **只读**：read / list / get_* / describe_*。
-- **禁写**：set_property / save / create_* / duplicate / rename / delete / move / add_* / remove_* 一律禁止。BP 配置、Niagara、蒙太奇通知、资产创建由**人工在编辑器内操作**。
-- 需要改资产时，向用户给出操作步骤指导（路径、面板、参数值），由用户执行。诊断 / 查日志 / PIE 验证不受限。
+- **默认只读**：read / list / get_* / describe_*。诊断 / 查日志 / PIE 验证不受限。
+- **UI 资产可写（需用户当场允许）**：用户明确授权后，本次会话可通过 MCP 创建/修改 **UMG 相关资产**——WBP 控件树与槽属性、事件图接线、UI 贴图导入与设置、UI 相关 BP 类默认值。**授权只限 UI、只限本会话**，不跨会话继承。
+- **其余资产仍禁写**：GA/GE/角色战斗 BP 配置、Niagara、蒙太奇通知、动画资产等一律由**人工在编辑器内操作**；需要时向用户给出操作步骤指导（路径、面板、参数值）。
+- 写 UI 资产前先读 `Docs/ZZZ-MCP-Pitfalls.md`（PIE 锁资产 / CDO 三步曲 / exec 单连接等铁律 + 收尾清单）。
 
 ## 当前进度（指针，勿在本文件维护副本）
 

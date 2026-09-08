@@ -19,6 +19,7 @@ class USpringArmComponent;
 class UAnimMontage;
 class UMaterialInstanceDynamic;
 class UMotionWarpingComponent;
+class UTexture2D;
 class AZZZCombatEnemy;
 class AZZZCharacter;  // 供下方切换委托自引用
 
@@ -63,6 +64,11 @@ public:
 
 	/** 每命中一名有效敌人固定回能值——被 target 侧 AttributeSet 的伤害确认处读取。 */
 	float GetEnergyGainPerHit() const { return EnergyGainPerHit; }
+
+	// === UI (2026-09-08) ===
+
+	/** 小队栏头像贴图（UZZZTeamPanelEntryWidget::BindMember 读取并推给 BP；未配 → 该槽头像留空）。 */
+	UTexture2D* GetPortraitTexture() const { return PortraitTexture; }
 
 	/**
 	 * 施加带符号能量增量（走 UZZZGameplayEffect_EnergyDelta, SetByCaller
@@ -206,6 +212,12 @@ protected:
 	/** 自然回能定时器 tick 间隔（秒）——单 tick 增量 = RegenPerSecond × Interval。 */
 	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|Stats", meta = (ClampMin = "0.05"))
 	float EnergyRegenInterval = 0.2f;
+
+	// === UI (2026-09-08) ===
+
+	/** 小队栏头像贴图（每个角色 BP 各自配置；未配 → 小队栏该槽头像留空）。 */
+	UPROPERTY(EditDefaultsOnly, Category = "ZZZ|UI")
+	TObjectPtr<UTexture2D> PortraitTexture;
 
 	// === Switch configuration (2026-08-31, 全部可空降级) ===
 
