@@ -113,7 +113,13 @@ GameplayCue:  GameplayCue.ZZZ.DamageNumber / CameraShake(.Low/.Mid/.High) / Enem
 
 规划中（Phase 4/5）：Input.Ultimate、Ability.Attack.Ultimate、Ability.ChainAttack、Element.*、Anomaly.*、Team.Slot.*、State.SuperArmor/IgnoreInput、Event.Combat.ChainReady。
 
-Tag 生命周期规则（2026-08-29 定稿，五层）：**A 动画窗口** → notify 配对 LooseTag + 双轨兜底（有主段 EndAbility / 无主段消费方显式清理）；**B 持久身份** → Infinite GE + 应用时 `DynamicGrantedTags`；**C 核心状态** → GE 管理（禁 LooseTag）；**D 能力生命周期** → `ActivationOwnedTags`；**E 本地路由标志** → Duration GE 自过期。**玩法 tag 除 A 层 notify 配对外禁用 `AddLooseGameplayTag`**；细则见 CLAUDE.md 硬性规则 1。
+Tag 生命周期规则（2026-08-29 定稿，五层）：**A 动画窗口** → notify 配对 LooseTag + 双轨兜底（有主段 EndAbility / 无主段消费方显式清理）；**B 持久身份** → Infinite GE + 应用时 `DynamicGrantedTags`；**C 核心状态** → GE 管理（禁 LooseTag）；**D 能力生命周期** → `ActivationOwnedTags`；**E 本地路由标志** → Duration GE 自过期。**玩法 tag 除 A 层 notify 配对外禁用 `AddLooseGameplayTag`**；命令摘要见 CLAUDE.md 规则 1。
+
+### 3.5 GE 编写铁律（2026-09-08 自 CLAUDE.md 迁入；规则 2/3 的完整版）
+
+- **CDO 时序**：GE CDO 在模块加载期构造（早于 StartupModule），构造函数内 `FZZZGameplayTags::Get()` 无效——配进 CDO 的 Tag 会静默丢弃 → Tag 一律**应用时**解析。构造函数内子对象用 `CreateDefaultSubobject`，禁用 `NewObject`（Fatal）。
+- **UE 5.3+ GE 组件**：`GrantedTags` / `Application Tag Requirements` 等 GE 直接属性已废弃 → 用 `GEComponents`（`UTargetTagsGameplayEffectComponent` 授予 / `UTargetTagRequirementsGameplayEffectComponent` 过滤）。
+- **载体分工**：系统级零参数 GE（B 持久身份 / C 核心状态，调用点在 AttributeSet / Enemy）→ C++ 载体类（`ZZZStatusGameplayEffects.h`）；能力级可调 GE（E 层，如 PerfectDodge / 慢放时长）→ BP 资产 + `TSubclassOf` 配置。
 
 ## 四、关键技术决策
 

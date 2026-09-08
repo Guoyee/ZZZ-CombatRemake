@@ -11,18 +11,8 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 
 ## 构建
 
-```bash
-# 生成 VS 工程文件
-"D:/Program Files/Epic Games/UE_5.8/Engine/Binaries/DotNET/UnrealBuildTool/UnrealBuildTool.exe" -ProjectFiles -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject" -Game -Engine="D:/Program Files/Epic Games/UE_5.8"
-
-# 构建编辑器目标（新增 UCLASS / UPROPERTY 后必须完整构建，UHT 重跑）
-"D:/Program Files/Epic Games/UE_5.8/Engine/Build/BatchFiles/Build.bat" ZZZCombatRemakeEditor Win64 Development -Project="D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
-
-# 打开项目
-"D:/Program Files/Epic Games/UE_5.8/Engine/Binaries/Win64/UnrealEditor.exe" "D:/UE5/ZZZCombatRemake/ZZZCombatRemake.uproject"
-```
-
-小改动可用 Live Coding；每个实施 Task 完成即构建 + PIE 手测，不跨 Task 堆积。
+命令（生成工程文件 / 构建编辑器目标 / 打开项目）见 `Docs/Setup.md`。
+纪律：小改动可用 Live Coding；**每个实施 Task 完成即构建 + PIE 手测，不跨 Task 堆积**（新增 UCLASS / UPROPERTY 必须完整构建，UHT 重跑）。
 
 ## 架构速览
 
@@ -33,25 +23,20 @@ UE 5.8 单机 C++ 项目，复刻《绝区零》(Zenless Zone Zero) 核心战斗
 - 命名：`Elimination` 非 `Kill`；属性 `Health` 非 `CurrentHP`；GameplayCue 加 `ZZZ_` 前缀。
 - UE 5.8 官方文档：https://docs.unrealengine.com/5.8/en-US/ （API 疑问优先查官方）
 
-## 硬性规则
+## 硬性规则（命令层——编号被 Phase3-Plan / System-Design / memory 引用，勿重排；定稿细节与坑以 System-Design 对应节为准，勿在本节复述细则）
 
-1. **Tag 分层管理，按场景选机制**（2026-08-29 定稿，替代 2026-08-10 版）：
-   - **A. 动画窗口**（notify Begin/End 配对、仅本地 ASC 查询消费）→ **允许 notify 配对 `AddLooseGameplayTag`/`RemoveLooseGameplayTag`**（notify 共享实例下最简洁，无需 per-owner 句柄映射；单机无网络同步缺陷）。Tag：CanCombo / CanBuffer / CanDashAttack / Enemy.AttackWindow / State.Combat.Recovery / State.PassThrough（Collision Pass-Through notify 授予，RotateToTarget 停止索敌转向）。⚠ 打断可能不触发 NotifyEnd → **双轨兜底**：① 有主段（GA 存活）由消费该 tag 的能力 **EndAbility 兜底移除**；② 无主段（GA 已结束、收刀/起身段无主播放）由消费方（如 `Move()`）**显式清理**（`RemoveLooseGameplayTag`）。**窗口 GE 化已取消**（2026-08-29 定稿：LooseTag 为 A 层方案）。禁止 notify 之外随手 Add。
-   - **B. 持久身份**（无生命周期所有者：State.Player/Enemy/Alive）→ Infinite GE + 应用时 `DynamicGrantedTags`（`UZZZGameplayEffect_Faction`/`_Alive`）。
-   - **C. 核心状态**（被多系统读取、参与死亡/失衡判定：State.Dead/Stun/Staggered）→ **GE 管理（禁 LooseTag）**：`UZZZGameplayEffect_Dead`（Infinite）/`_Stun`（Duration 5.0s 自过期，2026-09-05 起——曾为 Infinite 致 Daze 满后永久卡死，PIE 复现确认）/`_Stagger`（Duration 0.35s 自过期），见 `ZZZ/Effects/ZZZStatusGameplayEffects.h`。
-   - **D. 能力生命周期**（随能力激活/结束，含打断路径：State.Attacking/Invulnerable）→ `ActivationOwnedTags`。
-   - **E. 本地路由标志**（能力内部短暂标志：State.PerfectDodge）→ Duration GE 自过期（无 Timer 无句柄管理）。
-   - 废弃 tag：`Effect.Ability.CanDodge`（完美闪避判定前移 2026-08-09 后无消费方）、`Effect.Ability.CanParry`（弹刀与极限闪避共用 `Enemy.AttackWindow`，设计 §4.9）——保留注册防旧资产报错，新开发勿用。
-   - C++ 载体 vs BP 资产：系统级零参数 GE（B/C 层，调用点在 AttributeSet/Enemy）用 C++ 载体类；能力级可调 GE（E 层）用 BP 资产 + `TSubclassOf` 配置。
-2. **GE CDO 时序**：GE CDO 在模块加载期构造（早于 StartupModule），构造函数内 `FZZZGameplayTags::Get()` 无效，配进 CDO 的 Tag 会静默丢弃 → Tag 一律**应用时**解析。构造函数内子对象用 `CreateDefaultSubobject`，禁用 `NewObject`（Fatal）。
-3. **UE 5.3+ GE 组件**：`GrantedTags` / `Application Tag Requirements` 等 GE 直接属性已废弃，用 `GEComponents`（`UTargetTagsGameplayEffectComponent` 授予 / `UTargetTagRequirementsGameplayEffectComponent` 过滤）。
-4. **GCN 注册表镜像（R20）**：CueManager 扫描只读 FAssetData 的 `GameplayCueName`，引擎派生逻辑会把它擦成 None → unmapped 静默丢弃。GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()`；`IsOverride = true`；cue tag 需 ini 注册（`+Prop=` 逐元素语法）。
-5. **视觉反馈走 GameplayCue**：禁止在 `PostGameplayEffectExecute` 中 SpawnEmitter，走 `ExecuteGameplayCueOnActor`。
+1. **Tag 分层，按场景选机制**（A–E 五层全文见 System-Design §3.4 + §3.5）：
+   - A 动画窗口（CanCombo/CanBuffer/Enemy.AttackWindow/State.Combat.Recovery/State.PassThrough 等）= notify 配对 LooseTag + **双轨兜底**（有主段：消费能力 EndAbility 移除；无主段：消费方如 `Move()` 显式 `RemoveLooseGameplayTag`）；禁止 notify 之外随手 Add。
+   - B 持久身份 = Infinite GE + 应用时 DynamicGrantedTags；C 核心状态（Dead/Stun/Staggered）= **GE 管理，禁 LooseTag**；D 能力生命周期（Attacking/Invulnerable）= ActivationOwnedTags；E 本地路由标志 = Duration GE 自过期。
+   - 废弃 tag（CanDodge/CanParry/CanDashAttack）：保留注册防旧资产，勿用。GE 载体：系统级零参数用 C++ 载体类，能力级可调用 BP 资产 + TSubclassOf。
+2. **GE CDO 时序**：CDO 构造早于模块 StartupModule，构造函数内 `FZZZGameplayTags::Get()` 无效（配进 CDO 的 Tag 静默丢弃）→ Tag 一律**应用时**解析；构造函数内用 CreateDefaultSubobject，禁 NewObject（Fatal）。
+3. **UE 5.3+ GE 组件**：`GrantedTags` / Application Tag Requirements 等直接属性已废弃 → 用 GEComponents（UTargetTagsGameplayEffectComponent / UTargetTagRequirementsGameplayEffectComponent）。
+4. **GCN 注册表镜像（R20）**：GCN 必须重写 PostInitProperties/PostLoad/Serialize 同步 `GameplayCueName = GameplayCueTag.GetTagName()`；`IsOverride=true`；cue tag 需 ini 注册。完整见 System-Design §4.12。
+5. **视觉反馈走 GameplayCue**：禁止在 `PostGameplayEffectExecute` 内 SpawnEmitter → `ExecuteGameplayCueOnActor`。
 6. **M1 回调区分**：`PostGameplayEffectExecute` 仅对 Instant GE 触发；Duration/Infinite GE 属性变化走 `GetGameplayAttributeValueChangeDelegate()`。
-7. **收刀 = 连段窗口 + 标准打断流程**：单 Montage 双 Section（Attack + Recovery）；连段过渡**先激活下一段再 EndAbility**（防 BlendOut→BlendIn 空窗）；收刀段全程 Root Motion。**收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 `AnimNotify_SendGameplayEvent(EndEventTag)` **决定 GA 结束位置**（GA 提前 EndAbility，`bStopWhenAbilityEnds=false`；`EndEventTag` 未配置时默认 `Event.Combat.AttackEnd`（2026-08-29，基类惰性解析，GA_Dodge 覆盖为 `DodgeEnd`））→ ② 收刀段**无主播放** + 挂 `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`）**查询 tag → StopAnimMontage → 消费方显式清除 tag**（`RemoveLooseGameplayTag`；无主段 EndAbility 兜底不可达——GA 已结束，见规则 1 A 层双轨②）。**不调用 CancelAbilities**——GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（2026-08-29 定稿）；现 `Move()` 中的 Cancel 为旧方式残留（现有 basic attack 依赖），新技能不依赖。
-8. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接赋 `CustomTimeDilation` 属性）；`FGameplayModifierEvaluatedData` 构造必须 4 参；SetByCaller 用 FGameplayTag 版；UFUNCTION 参数禁止 struct 裸指针（`const FGameplayEventData*` 会 UHT 报错，用 GenericGameplayEventCallbacks + lambda）。
-
-9. **文档同步与 git 提交时机（2026-09-02 定稿，取代曾试行的分层/戳/状态文件方案）**：流程 = 修改完代码 → **人工 PIE 验证通过后** → 才同步文档 + 提交 git（验证前不动文档、不提交，避免无效的文档修改和提交）；收尾动作 = 把与代码冲突的文档节改对（来不及则节首盖 `⚠ 过期 YYYY-MM-DD`）+ 覆盖式更新下方「当前状态」（≤10 行、带日期；**只记进度 / 下一步 / 资产级待办**——定稿细节与踩坑进架构文档和 commit message，禁止写回该段，防段落回涨），与代码同 commit。发现文档与代码 / 较新定稿矛盾 → 以代码和最近定稿为准，禁止按旧文档实现、禁止静默忽略。
+7. **收刀 = 连段窗口 + 标准打断**（完整流程见 System-Design §4.7，新技能一律照此）：① 动作段末 notify（`EndEventTag`，未配默认 `Event.Combat.AttackEnd`）定 GA 结束位（`bStopWhenAbilityEnds=false`）→ ② 收刀段无主播放 + `AbilityWindow(State.Combat.Recovery)` → ③ 打断入口（`Move()`）查 tag → StopAnimMontage → **消费方显式 RemoveLooseGameplayTag**。**不调 CancelAbilities**（GA 由 OnInterrupted→EndAbility 兜底；`Move()` 内 Cancel 为 basic attack 旧残留，新技能不依赖）。
+8. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接赋属性）；`FGameplayModifierEvaluatedData` 构造必须 4 参；SetByCaller 用 FGameplayTag 版；UFUNCTION 参数禁止 struct 裸指针（用 GenericGameplayEventCallbacks + lambda）。
+9. **文档同步与 git 提交时机**：流程 = 改完代码 → **人工 PIE 验证通过后** → 才同步文档 + 提交 git（验证前不动文档、不提交）；收尾 = 改对冲突文档节（来不及则节首盖 `⚠ 过期 YYYY-MM-DD`）+ 覆盖式更新「当前状态」（≤10 行、带日期；**只记进度/下一步/资产级待办**，细则进架构文档与 commit message，防段落回涨）同 commit。发现矛盾 → 以代码与最近定稿为准，禁按旧文档实现、禁静默忽略。
 
 ## MCP 资产操作规则
 
