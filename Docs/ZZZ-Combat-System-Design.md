@@ -2,7 +2,7 @@
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 单机 · DX12/SM6
 > **目标**: 在现有 ThirdPerson 基础上复刻《绝区零》核心战斗逻辑
-> **状态**: Phase 1/1.5/2 完成，Phase 3 进行中
+> **状态**（2026-09-08 对齐）: Phase 1/1.5/2 ✅；Phase 3/3.5 落地 ✅（招架支援 09-05、Motion Warping 09-07 收尾；剩余 = 资产级待办，见 Phase3 计划「三」）；Phase 4/5/6 ⬜
 > **旧版备份**: `Docs/archive/ZZZ-Combat-System-Design.md.orig`（勿读，仅查证历史）
 
 ## 一、目标系统
@@ -10,14 +10,14 @@
 | 系统 | 说明 | 状态 |
 |---|---|---|
 | 基础攻击连段 | 3-5 段普攻，预输入缓冲 | ✅ Phase 2（4 段） |
-| 特殊攻击 EX | 普通/强化特殊技（Y；能量 ≥ 消耗触发强化版）+ 能量系统 | ✅ 2026-09-03（C++ ✅；资产待做） |
-| 闪避 / 完美闪避 | 极限时机触发时空断裂 | 🔄 Phase 3 |
+| 特殊攻击 EX | 普通/强化特殊技（Y；能量 ≥ 消耗触发强化版）+ 能量系统 | ✅ 2026-09-03 C++ 定稿 + Koleda 资产（09-05 核对；Jane 待做） |
+| 闪避 / 完美闪避 | 极限时机触发时空断裂 | ✅ 2026-09-03（C++ 定稿 + Koleda 资产；Jane 待做） |
 | 招架支援 / 快速支援 | 防御型角色切换（空格，敌人黄闪内） | ✅ 招架支援 2026-09-05；快速支援 ⬜（被击飞/技能窗，接口预留） |
 | 终结技 | 消耗全队共享 Decibel | ⬜ Phase 5 |
 | 连携技 Chain Attack | 打空 Daze 后多人连携 | ⬜ Phase 5 |
 | 元素 / 异常 | Fire/Ice/Electric/Physical/Ether + 积蓄爆发 | ⬜ Phase 4 |
 | Daze 失衡 | 攻击积累架势伤害，满后失衡 | ✅ 数值（连携 ⬜ Phase 5） |
-| 三人编队切换 | 持久化成员 + 异步退场状态机（等 GA 结束→退场动画→材质淡出→隐藏）| ✅ 普通切换 2026-09-02；招架自动判定 2026-09-05 |
+| 三人编队切换 | 持久化成员 + 异步退场状态机（等 GA 结束→退场动画→材质淡出→隐藏）| ✅ 普通切换 2026-09-02；招架支援 2026-09-05；Motion Warping 2026-09-07 |
 | 敌人 AI | 以骸行为 | ⬜ Phase 6（最小攻击已实现） |
 
 ## 二、核心架构决策
@@ -65,8 +65,9 @@ UZZZGameplayAbility（抽象，InstancedPerActor；蒙太奇模板 PlayAttackMon
 │                        # 可选链出（2026-08-29）：配 NextComboAbility（如 GA_DashAttack→GA_BasicAttack_02）
 │                        #   即收刀段 CanCombo 窗口内按攻击直接进下一段；未配 = 单发（不 spawn 组合任务）
 │                        # NextComboAbility 类型 2026-09-03 放宽为 UGameplayAbility 族（追击段入链）
-├── UZZZAssistDefensive  # 弹刀：入场全程无敌，Cancel 敌人攻击 + 敌人硬直（Phase 3 待做）
-├── UZZZAssistOffensive  # 突击：入场前段小无敌 + 追击命中（Phase 3 待做）
+├── UZZZAssistDefensive  # 招架支援 ✅（2026-09-05 落地，机制见 §4.9.2）：敌 AttackWindow 内切换键自动
+│                        #   判定 → 敌前摆位激活；09-07 起激活时写 ZZZ_ParryLand warp target（敌 hand_r 前）
+├── UZZZAssistOffensive  # 突击（旧 Staggered 自动判定）——已废弃 → 连携技 Phase 5，类未建
 ├── UZZZSpecialAttack    # 特殊技 ✅ 2026-09-03（详见 §4.13）：可选起手 A/B/C（Lead,
 │                        #   含弱打击1）+ 主体 Body（普通=AttackMontage / 强化=EnhancedMontage,
 │                        #   仅打击2;能量≥EnergyCost 扣费,判定在 GA 内;起手普通/强化共用）;
@@ -172,7 +173,7 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - 两段式统一机制（2026-08-08）：基类 `EndEventTag`（GA_Dodge=Event.Combat.DodgeEnd、GA_BasicAttack_N=Event.Combat.AttackEnd）——蒙太奇动作段末尾挂 AnimNotify 发事件 → GA 提前 EndAbility，过渡段无主播放（`bStopWhenAbilityEnds=false`）。连段窗口关闭后 GA 即结束，门控放行下次起手。**未配置默认 `Event.Combat.AttackEnd`**（2026-08-29）：基类惰性解析（`GetEndEventTag()`，激活/结束时有效）+ `Config/DefaultGameplayTags.ini` 预注册（`+GameplayTagList=`）——CDO 构造早于 native tag 注册，裸 `RequestGameplayTag` 在构造函数会 ensure（规则 2），ini 为唯一 CDO 期可用来源。
 - **收刀打断标准流程（2026-08-29 定稿，新技能一律照此）**：① 动作段末 notify（`EndEventTag`）决定 GA 结束位置 → ② 收刀段无主播放 + `AbilityWindow(State.Combat.Recovery)` 可打断 tag → ③ 打断入口（`Move()`，`ZZZCharacter.cpp:236`）查询 tag → StopAnimMontage + **消费方显式 `RemoveLooseGameplayTag(State.Combat.Recovery)`**（无主段 EndAbility 兜底不可达——GA 已结束；停蒙太奇可能跳过 NotifyEnd，2026-08-29 修复；对应 CLAUDE.md 规则 1 A 层双轨②）。**不调用 CancelAbilities**（2026-08-29 定稿）：GA 由蒙太奇中断回调 OnInterrupted → EndAbility 覆盖（与闪避被追击技打断同链）；现 `Move()` 中的 Cancel 为旧方式残留，现有 basic attack 依赖暂保留，新技能不依赖。
 
-### 4.8 闪避与完美闪避（Phase 3 进行中）
+### 4.8 闪避与完美闪避（✅ 2026-09-03 定稿；资产 Koleda 已配、Jane 待做）
 
 - 输入：`Input.Dodge`（`bTriggerOnStarted=true`，Started 语义）。
 - `UZZZDodge`：Commit → Cancel 普攻 → 按 `LastInputVector` 选前/后蒙太奇（方向是输入数据非能力身份）；无敌 = `ActivationOwnedTags=State.Invulnerable`；二连闪 CD（DoubleDodgeWindow 0.7s → DodgeCooldown 0.7s）；程序化位移兜底（`bUseProceduralDisplacement`，DodgeAcceleration=11000 cm/s² + 0.22s ≈ 266cm；Root Motion 动画优先）。闪避全程可攻击（不配 BlockAbilitiesWithTag）。
@@ -235,7 +236,7 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 - 注册表镜像坑（R20）：GCN 必须重写 `PostInitProperties`/`PostLoad`/`Serialize` 同步 `GameplayCueName = GameplayCueTag.GetTagName()` + `IsOverride=true` + ini 注册（`+Prop=` 语法），否则 CueManager 扫描 unmapped 静默丢弃；资产重存需先标 dirty。
 - 扩展：红闪（不可闪避）/蓝闪（弹刀）同一 GCN 换色或按敌人子类配不同 cue tag。
 
-### 4.13 特殊技 + 能量系统（✅ C++ 2026-09-03 定稿；资产待做）
+### 4.13 特殊技 + 能量系统（✅ 2026-09-03 C++ 定稿；Koleda 资产 09-05 已配，Jane 待做）
 
 **动作结构（2026-09-03 定稿）**：特殊技 = **可选起手段 Lead（含打击 1：弱伤害/长前摇） + 主体 Body（仅打击 2：主要伤害源）**。主体分普通/强化两版（强化 = Energy ≥ EnergyCost，判定+扣费在 GA 内）；**起手 A/B/C 与普通/强化无关、普通/强化共用一套**。设计意图：2/4 段快速打击（免起手直连主体）跳过低效打击 1，鼓励玩家多用。
 
@@ -315,7 +316,6 @@ ExecCalc 统一计算 AnomalyBuildup → 目标施加对应 GE（Infinite+Stack�
 
 ## 九、遗留事项
 
-- `GC_ZZZ_DamageNumber` 补 R20 `GameplayCueName` 重写（防重存复发）
 - 多角色输入路由泛化（起手硬编码 `DefaultAbilities[0]` → 按 Tag）
 - `UZZZCharacterData` 落地
 - `AbilityTask_DoTrace` 迁移
