@@ -156,10 +156,11 @@ protected:
 	FText DisplayName;
 
 	/**
-	 * 挂点相对根高度 (cm)。初值贴合 Mannequin, 首次 PIE 后 ±30 微调 (UI-Design §八)。
+	 * 挂点相对根高度 (cm)。根 = 胶囊中心, Mannequin 头顶约 +92cm——初值 90 让条贴头顶;
+	 * 每骨架按需微调 (UI-Design §八)。BeginPlay 应用, BP 改值无需重编译。
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ZZZ|UI")
-	float HeadBarHeight = 190.0f;
+	float HeadBarHeight = 90.0f;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "GAS")
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;

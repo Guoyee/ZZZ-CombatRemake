@@ -76,7 +76,16 @@ HUD 里内嵌的 WBP（如 `WBP_ZZZHUD` 里的 `TeamPanel`）是**模板实例**
 Border → Image 之后，旧的 `Get Icon` 输出仍是 `Border Object Reference`，`connect_pins` 报类型不兼容。
 **配方**：删掉旧的 Get 节点重新 add（按变量名重新解析）。
 
-### 4. 其它
+### 4. 删控件后 Target **静默回落 Self**（不报错，但作用对象变了）
+
+删掉/改名一个被图引用的控件后，指向它的 `self` 连线消失；**只要 BP 自身的类兼容该函数的声明类，编译器就静默回落到 `Self`**——编译通过，但作用对象变成了 widget 自己。
+
+- 例：`SetRenderScale` / `SetRenderOpacity` 声明在 `UWidget` 上，`WBP_TeamPanelEntry`（UserWidget → Widget）**兼容** → 隐式 `Self`（作用于 Entry 本体，视觉上与原来的根容器等价，容易蒙混过关）；
+- 反例：`SetBrushFromTexture` 声明在 `UImage` 上，`WBP_ZZZSkillButton` **不是** Image → 编译报 `This blueprint (self) is not a Image, therefore 'Target' must have a connection`。
+
+**教训**：删控件/换类型后别只看"编译过了"——用 `read_graph_summary` 确认目标连线是否还在；或者干脆把逻辑搬进 C++（本会话 TeamPanel 最终形态就是这么定的：控件名固定 + C++ 直接写，图清空）。
+
+### 5. 其它
 
 - `connect_pins` 的 `breakExistingSource` / `breakExistingTarget` 用于改接线（改前想清楚会断哪条）。
 - `read_node_property` / `set_node_property` 的 `nodeName` 接受 add_node 返回的 hex id，也接受 `read_graph_summary` 里的短 id。

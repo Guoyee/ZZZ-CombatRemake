@@ -9,21 +9,28 @@
 
 struct FOnAttributeChangeData;
 class AZZZCharacter;
-class UAbilitySystemComponent;
+class UImage;
+class USizeBox;
+class UTextBlock;
 
 /**
- * 单槽子状态栏（左=名字/头像占位，右=上血条下能量条）。
+ * 左上小队状态栏本体（WBP_TeamPanelEntry）——**3 个栏位做死成一体的 ZZZ 样式面板**
+ * （2026-09-09 重构：栏位不再复用，整块面板一个 widget）。
  *
- * 分工（同 UZZZDamageNumberWidget 先例）：
- *   C++ — 绑定成员 ASC 的 Health/Energy 值变化 delegate（不轮询），把语义数据
- *         （百分比 / 高亮 / 灰显）推给 BP。绑定后立即手动拉一次现值（delegate
- *         只在变化时触发——首帧空白防护，UI-Design §一.2）。
- *   BP (WBP_TeamPanelEntry) — 全部展示：名字文本、血条/能量条 SetPercent、
- *         高亮描边与灰显样式，通过 BP_On* 事件接收。
+ * 分工：
+ *   C++ — 按控件名取到 3 组槽位控件（头像 / 血条 / 能量条）+ 当前角色数值文本，
+ *         把成员数据直接写进控件。槽 0 = 当前操作角色，槽 1/2 = 后续切出（槽序
+ *         由 UZZZTeamPanelWidget 旋转后传入）。
+ *   BP (WBP_TeamPanelEntry) — 纯布局与样式；事件图无需任何逻辑。
  *
- * 槽实例由 UZZZTeamPanelWidget 按 roster 大小运行期创建；BindMember 每次
- * RefreshSquad 重绑（先解绑旧 delegate，防旧角色 delegate 残留）。
- * Member == nullptr（该职业尚未登场过一次）→ 只推名字，栏保持 BP 默认空态。
+ * 控件命名（设计器里的名字 → C++ 用途；旧名做兼容回落）：
+ *   | 名字 | 用途 | 兼容旧名 |
+ *   |---|---|---|
+ *   | `Avatar1/2/3` | 槽位头像（成员 BP 的 `PortraitTexture`；未配则隐藏） | — |
+ *   | `HP1/HP2/HP3` | 槽位血条容器（SizeBox，子控件 = ProgressBar） | — |
+ *   | `MP1/MP2/MP3` | 槽位能量条容器（同上） | `MP2_1`（槽 3 旧名） |
+ *   | `HealthText` | 当前角色 HP 数值文本（"899/1000"，无千分位） | `TextBlock_172` |
+ *   | `SlotBg1/2/3` | 槽位底板（空槽时隐藏） | `Image` / `Image_1` / `Image_3` |
  */
 UCLASS()
 class UZZZTeamPanelEntryWidget : public UUserWidget
@@ -31,46 +38,49 @@ class UZZZTeamPanelEntryWidget : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	/** 绑定一个 roster 槽位。Member 为空 = 未登场占位；非空 = 绑其 ASC 并立即拉现值。 */
-	void BindMember(AZZZCharacter* InMember, bool bInIsCurrent, const FText& InDisplayName);
+	/** 固定槽位数——与 WBP_TeamPanelEntry 里摆的栏位数一致（做死，不随 roster 变化）。 */
+	static constexpr int32 SlotCount = 3;
 
-	/** 解绑 ASC 属性 delegate（重绑/重建前调用）。 */
-	void UnbindMember();
+	/**
+	 * 绑定槽位成员：解旧 delegate → 头像（有贴图才显示）→ 绑 HP/MP 值变化 delegate
+	 * → 立即拉一次现值（防首帧空白）→ 槽 0 顺带刷新数值文本。
+	 * @param Member 可为 nullptr（空槽：隐藏该槽数据控件）。
+	 */
+	void BindSlot(int32 SlotIndex, AZZZCharacter* Member);
 
-	// === BP 展示入口（WBP_TeamPanelEntry 实现） ===
+	/** 清空槽位：解绑 delegate + 隐藏该槽全部控件（roster 人数 < 3 时由面板调用）。 */
+	void ClearSlot(int32 SlotIndex);
 
-	/** 每次绑定时推一次：槽位角色名 + 是否当前操作（槽 0 → 高亮）+ 头像贴图（未配 → null）。 */
-	UFUNCTION(BlueprintImplementableEvent, Category = "ZZZ|HUD")
-	void BP_OnMemberBound(const FText& DisplayName, bool bIsCurrent, UTexture2D* Portrait);
-
-	/** 血条百分比（0–1）+ 绝对值（参考图 "8604/8604" 式数值文本；BP 可只用百分比）。 */
-	UFUNCTION(BlueprintImplementableEvent, Category = "ZZZ|HUD")
-	void BP_OnHealthUpdated(float HealthPercent, float CurrentHealth, float MaxHealth);
-
-	/** 能量条百分比（0–1；隐藏队员后台回能照常反映）。 */
-	UFUNCTION(BlueprintImplementableEvent, Category = "ZZZ|HUD")
-	void BP_OnEnergyUpdated(float EnergyPercent);
-
-	/** 灰显切换（HP==0 事件驱动，见 UpdateHealth 注释）。 */
-	UFUNCTION(BlueprintImplementableEvent, Category = "ZZZ|HUD")
-	void BP_OnEliminatedUpdated(bool bEliminated);
+protected:
+	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
 
 private:
-	void UpdateHealth(float NewHealth);
-	void UpdateEnergy(float NewEnergy);
+	// === 控件缓存（NativeConstruct 按名字解析；缺哪个只影响对应显示并打 Warning） ===
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UImage>> Avatars;
 
-	void OnHealthChanged(const FOnAttributeChangeData& Data);
-	void OnEnergyChanged(const FOnAttributeChangeData& Data);
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USizeBox>> HPBoxes;
 
-	/** 本槽绑定的成员（隐藏中/操作中都绑——面板显示活体实例的实时属性）。 */
-	TWeakObjectPtr<AZZZCharacter> BoundMember;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<USizeBox>> MPBoxes;
 
-	FDelegateHandle HealthChangeHandle;
-	FDelegateHandle EnergyChangeHandle;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UImage>> SlotBackgrounds;
 
-	/** 本槽是否当前操作角色（槽 0，高亮由 BP 依据 BP_OnMemberBound 参数实现）。 */
-	bool bIsCurrentSlot = false;
+	UPROPERTY(Transient)
+	TObjectPtr<UTextBlock> HealthText;
 
-	/** 灰显状态缓存——只在翻转时推一次 BP_OnEliminatedUpdated。 */
-	bool bIsEliminated = false;
+	// === 每槽绑定状态 ===
+	TWeakObjectPtr<AZZZCharacter> BoundMembers[SlotCount];
+	FDelegateHandle HealthHandles[SlotCount];
+	FDelegateHandle EnergyHandles[SlotCount];
+
+	void ResolveWidgets();
+	void UnbindSlot(int32 SlotIndex);
+	void SetSlotVisible(int32 SlotIndex, bool bVisible);
+	void UpdateHealth(int32 SlotIndex, float NewHealth);
+	void UpdateEnergy(int32 SlotIndex, float NewEnergy);
+	void RefreshHealthText();
 };

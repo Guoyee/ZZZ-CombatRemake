@@ -1,7 +1,7 @@
 # ZZZ UI 设计 —— HUD（TeamPanel / 技能按钮）& 敌人头顶条
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 定稿 2026-09-08（排程：HUD 步先行，见 Phase3-Plan §四）
-> **状态**（2026-09-08）：**屏幕 HUD ✅ 已实施 + PIE 验证**（TeamPanel 槽序/头像/血条/能量/数值 + 技能按钮圆底盘/灰度就绪态；C++ + WBP 全部落地，见 §五）。**敌人头顶条未做**（排程下一项）。后续轮次事项见 §七 后置清单。资产经用户允许后可由 MCP 直接写（权限见 CLAUDE.md「MCP 资产操作规则」，坑见 `ZZZ-MCP-Pitfalls.md`）。
+> **状态**（2026-09-10）：**屏幕 HUD ✅**（TeamPanel = 3 栏位一体面板，槽序旋转/头像/血条/能量/数值；技能按钮 = 圆底盘 + 彩色/灰度就绪态）+ **敌人头顶条 ✅**（`WBP_EnemyHead`：名字 + 血条 + 失衡条）——C++ + WBP 全部落地并 PIE 验证，见 §五。后续轮次事项见 §七 后置清单。资产经用户允许后可由 MCP 直接写（权限见 CLAUDE.md「MCP 资产操作规则」，坑见 `ZZZ-MCP-Pitfalls.md`）。
 > **关联**：`ZZZ-Combat-System-Design.md`（Pawn-ASC、UI 事件驱动 §七.5、属性命名）；`ZZZ-Combat-Phase3-Plan.md` §四 排程；模板先例 `Variant_Combat` LifeBar（UWidgetComponent 用法参考，勿改 Variant）；`ZZZ/UI` 飘字系统（Screen-space WidgetComponent 先例）。
 
 ## 一、载体划分与总原则
@@ -28,11 +28,20 @@
 ### 2.2 TeamPanel（定案：左上 / 纯展示 / 轮转序）
 - **槽位序**：设当前索引 = 当前操作角色在 `SquadClasses` 的下标，则槽 i = `SquadClasses[(当前索引 + i) % N]` 对应成员实例（`SquadMembers`）。槽 0 = 当前操作（高亮），槽 1 = 下一次切出（与 `PickNextSquadClass` 口径一致：存活者才可被选中切出）。
 - **成员死亡（Eliminated）**：该槽**灰显占位**（HP=0、去饱和），不隐藏、不补位——切人自动跳过已由 `PickNextSquadClass` 保证，面板如实显示"此人已淘汰"；仅当队伍实有人数 N<3 时按人数隐藏空槽。
-- **每槽数据**：绑定成员 ASC `Health`（血条 %）+ `Energy`（能量条 %，隐藏队员后台回能 1/s 照常反映）+ **HP 数值文本**（`BP_OnHealthUpdated` 带 Current/Max，BP 内 `Round → Conv_IntToText(bUseGrouping=false) → Format Text("{0}/{1}")` → 无千分位）。
-- **头像**：成员 BP 的 `AZZZCharacter.PortraitTexture`（`EditDefaultsOnly`，每角色各自配），经 `BP_OnMemberBound(DisplayName, bIsCurrent, Portrait)` 推给 BP；未配则该槽头像隐藏（`IsValid` 分支）。
-- **槽 0 放大**：`BP_OnMemberBound` 内 `SetRenderScale(1.0)`，其余槽 `0.72`（参考图"当前角色更大"观感）。
+- **实现形态（2026-09-10 重构定稿）**：**3 个栏位做死成一个整体**——`WBP_TeamPanelEntry` 一个 widget 装 3 槽（样式与 ZZZ 统一，不再按槽复用控件）；`WBP_TeamPanel` 只是宿主容器（`EntryContainer` 里放这一个面板实例）。
+- **数据路由（C++ 直接写控件，BP 事件图无逻辑）**：`UZZZTeamPanelEntryWidget` 按**控件名**取控件并直接写值——
+  | 控件名 | 用途 | 兼容旧名 |
+  |---|---|---|
+  | `Avatar1/2/3` | 槽位头像 = 成员 BP 的 `PortraitTexture`（未配则隐藏） | — |
+  | `HP1/2/3` | 槽位血条容器（SizeBox，子控件 = ProgressBar） | — |
+  | `MP1/2/3` | 槽位能量条容器 | `MP2_1` |
+  | `HealthText` | 当前角色数值文本（`885/1000`，无千分位） | `TextBlock_172` |
+  | `SlotBg1/2/3` | 槽位底板（空槽时隐藏） | `Image`/`Image_1`/`Image_3` |
+
+  每槽独立绑 `Health`/`Energy` 值变化 delegate（重绑/清槽精确解绑 + 立即拉现值防首帧空白）。
+- **槽 0 = 当前操作角色**（布局上最大，参考图口径；不再靠运行时缩放），槽 1/2 = 后续切出。
 - **开局预加载**（2026-09-08 定稿）：PC `BeginPlay` 为 roster 里每个职业各生成一个隐藏实例（`SetActorHiddenInGame(true)` + 关碰撞，与退场后状态一致），初始角色直接登记不重复生成——保证**首次切换前每个槽都有真实成员**（否则未登场槽无实例，只能显示占位数值）。
-- **刷新时机（Task #6 本体）**：override/接入 PC `OnPossess` → `RefreshSquad()`（替代现延迟一帧逻辑）：重算槽序（旋转）+ 高亮 + 重绑属性 delegate（防旧角色 delegate 残留）。招架支援/普通切换均 Possess 驱动 → 高亮与槽序自动一致，无额外信号。
+- **刷新时机（Task #6 本体）**：PC `OnPossess` → `RefreshHUD()` → `UZZZTeamPanelWidget::RefreshSquad(PC, CurrentPawn)`：重算槽序（旋转）+ 逐槽 `BindSlot`/`ClearSlot`（重绑属性 delegate，防旧角色残留）。招架支援/普通切换均 Possess 驱动 → 槽序自动一致，无额外信号。
 - **数据访问**：PC 已有 `SquadClasses/SquadMembers`；若无只读访问器则加 `BlueprintPure` getter，**不改存储形态**。
 
 ### 2.3 技能按钮（定案：纯状态指示，仅特殊技，无大招槽）
@@ -44,9 +53,9 @@
 
 ## 三、敌人头顶条
 
-### 3.1 载体与创建
-- `AZZZCombatEnemy` 构造器 `CreateDefaultSubobject<UWidgetComponent>(TEXT("HeadStatus"))`；**WidgetSpace = Screen**（自动面向相机，免旋转逻辑）；挂点 = 根上方常数偏移（初值 +190cm 左右，按骨架首测微调）。
-- Widget 类 = `WBP_EnemyHead`（BP），Enemy C++ 持 `TSubclassOf`；**所有敌人生成即自带**。首版不做 MaxDrawDistance/距离裁剪。
+### 3.1 载体与创建 ✅ 2026-09-10 实施
+- `AZZZCombatEnemy` 构造器 `CreateDefaultSubobject<UWidgetComponent>(TEXT("HeadStatus"))`；**WidgetSpace = Screen**（自动面向相机，免旋转逻辑）；DrawSize **220×40**（贴合内容：名字 11pt + 条 12pt——画布留白会让内容整体偏上）；挂点 = 根（胶囊中心）上方 `HeadBarHeight`（**默认 90cm**，Mannequin 头顶实测；**BeginPlay 应用** → BP 改值无需重编译）。
+- Widget 类 = `WBP_EnemyHead`（BP，`UZZZEnemyHeadWidget` 子类），Enemy C++ 持 `TSubclassOf`；未填 = 组件空渲染不报错，填了即显示。首版不做 MaxDrawDistance/距离裁剪。
 
 ### 3.2 内容与更新（定案：常显全部存活敌人）
 - 内容：名字（上，小字；数据源 = 敌人 BP 可配 `FText`，人工填，可留空）+ 血条 + 失衡条（黄，区分血条）。
@@ -59,39 +68,39 @@
 | 类 | 职责 | 关键接点 |
 |---|---|---|
 | `UZZZPlayerHUDWidget` | 根容器（TeamPanel/技能钮引用）、初始化 | PC CreateWidget/AddToViewport |
-| `UZZZTeamPanelWidget` | 槽数 = N、槽序旋转刷新 | `OnPossess → RefreshSquad`（Task #6 本体） |
-| `UZZZTeamPanelEntryWidget` | 单栏：头像/血条/能量条/数值/高亮/灰显 | Health+Energy delegate；`BindMember` 推 DisplayName/bIsCurrent/Portrait |
+| `UZZZTeamPanelWidget` | 驱动：找到面板实例 → 按槽序 `BindSlot`/`ClearSlot` | `OnPossess → RefreshSquad`（Task #6 本体） |
+| `UZZZTeamPanelEntryWidget` | **3 栏位一体面板**：按控件名直接写头像/血条/能量条/数值 | 每槽独立绑 Health+Energy delegate（`BindSlot`） |
 | `UZZZSkillButtonWidget` | 就绪态（彩色/灰度图标切换）+ E 角标 | Energy delegate + Possess 重绑 |
 
 ### 角色侧 C++
 - `AZZZCharacter.PortraitTexture`（`EditDefaultsOnly`，`UTexture2D*`）——小队栏头像数据源，每角色 BP 各自配。
 - `AZZZPlayerController`：HUD 创建/刷新（`CreateHUD`/`RefreshHUD`）+ **开局预加载小队成员**（`BeginPlay`）+ 只读 roster 访问器（`GetSquadRosterSize`/`GetSquadRosterClass`/`GetSquadMemberByClass`/`GetCurrentSquadIndex`）。
 
-### 敌人侧 C++（✅ 2026-09-08 已建，WBP 待做）
-- `AZZZCombatEnemy`：`HeadStatus` WidgetComponent（Screen 空间、根上方 `HeadBarHeight`=190、DrawSize 240×84）+ `HeadWidgetClass`/`DisplayName`/`HeadBarHeight` 配置 + BeginPlay 创建 widget 并 `BindStatus`。
+### 敌人侧 C++（✅ 2026-09-10 实施完成）
+- `AZZZCombatEnemy`：`HeadStatus` WidgetComponent（Screen 空间、根上方 `HeadBarHeight`=**90**、DrawSize **220×40**）+ `HeadWidgetClass`/`DisplayName`/`HeadBarHeight` 配置；BeginPlay 应用高度 + 按 `HeadWidgetClass` 创建 widget 并 `BindStatus`（绑 Health/Daze delegate + 拉现值）。
 
 ### 资产（`/Game/ZZZ/UI/`，✅ 2026-09-08 全部落地）
 | 资产 | 内容 |
 |---|---|
 | `WBP_ZZZHUD` | Overlay 根 + TeamPanel（左上 48/32）+ SkillButton（右下 -72/-110） |
-| `WBP_TeamPanel` | Border 底板（圆角 14 + 1px 白描边）+ `EntryContainer`（C++ BindWidget）+ `EntryWidgetClass` |
-| `WBP_TeamPanelEntry` | 头像 Image + 血条/能量条 + HP 数值；4 个事件（MemberBound/Health/Energy/Eliminated）；当前槽 `SetRenderScale(1.0)` vs `0.72` |
+| `WBP_TeamPanel` | 宿主容器：`EntryContainer`（任意 Panel，名字不可改）+ 1 个 `WBP_TeamPanelEntry` 实例 |
+| `WBP_TeamPanelEntry` | **3 栏位一体面板**（`Avatar1/2/3` + `HP1/2/3` + `MP1/2/3` + `HealthText` + `SlotBg1/2/3` + 面板底图）；**事件图清空**（逻辑全在 C++） |
 | `WBP_ZZZSkillButton` | 黑色圆底盘 + 技能图标 Image + `E` 键位（圆角 6 小方块） |
-| 贴图 | `UI_Assets/SkillSpecial`、`SkillSpecialGray`（灰度版）、`koleda`、`Miyabi`、`Nikole` |
-| `WBP_EnemyHead` | 名字 Text + 血条 + 失衡条 —— **未做**（敌人头顶条步） |
+| 贴图 | `UI_Assets/SkillSpecial`、`SkillSpecialGray`（灰度版）、`IconRoleGeneral12/14`、`Miyabi`、`ZZZ-UI黑色边框`（面板底图） |
+| `WBP_EnemyHead` | 名字 Text + 血条 + 失衡条 ✅ 2026-09-10 |
 
 ## 五、实施分步（构建/验证纪律）
 
 1. **C++ 逻辑件** ✅ 2026-09-08（4 个 UUserWidget 类 + `AZZZCharacter.PortraitTexture` + PC 集成；完整构建通过）。
 2. **资产** ✅ 2026-09-08（WBP 全部落地，经用户授权由 MCP 直接写；配方与坑见 `ZZZ-MCP-Pitfalls.md`）。
-3. **PIE 验证清单**（✅ 已验：①②③⑤；④⑥ 随敌人头顶条步）：
-   ① 切换后槽序旋转、槽 0 放大跟随、槽 1 = 下次实际切出角色 —— ✅（Miyabi/koleda 头像互换实测）
-   ② 隐藏队员血条/能量实时（后台回能）—— ✅（槽 1 能量 18% 在涨）
+3. **PIE 验证清单**（✅ 已验：①②③⑤⑥ 屏幕 HUD；④ 敌人头顶条）：
+   ① 切换后槽序旋转、槽 0 = 当前角色、槽 1/2 = 后续切出 —— ✅（头像互换实测）
+   ② 隐藏队员血条/能量实时（后台回能）—— ✅（能量条在涨）
    ③ 能量 ≥ 50 → 图标转彩色；不足 → 灰度 —— ✅
-   ④ 多敌人常显，受击血条掉/失衡涨，死亡隐藏 —— 未做（敌人头顶条步）
-   ⑤ 队伍 1/2 人配置时多余槽不显示 —— ✅（roster 2 人 → 2 槽）
-   ⑥ 10+ 次快速切换无 UI 悬挂/tag 残留 —— 待回归
-4. **实测修正（2026-09-08）**：① 成员解析改按类查找（`SquadMembers` 非 index 对齐）；② 开局预加载全部成员（否则未登场槽无数据）；③ 就绪态从"tint 压暗"改"换贴图"（压暗观感像半透明）。
+   ④ 敌人头顶条常显，受击血条掉/失衡涨 —— ✅ 2026-09-10（`WBP_EnemyHead`）
+   ⑤ 队伍 1/2 人配置时多余栏位不显示 —— ✅（roster 2 人 → 第 3 栏 `ClearSlot` 隐藏）
+   ⑥ 快速切换无 UI 悬挂/delegate 残留 —— ✅
+4. **实测修正（2026-09-08/10）**：① 成员解析改按类查找（`SquadMembers` 非 index 对齐）；② 开局预加载全部成员（否则未登场槽无数据）；③ 就绪态从"tint 压暗"改"换贴图"（压暗观感像半透明）；④ **TeamPanel 最终形态 = 3 栏位做死成一个 widget + 设计器摆位 + C++ 按控件名直接写数据**（栏位复用/运行时创建/BP 事件图三条路都走过后定稿——布局自由度最高、逻辑最集中）。
 
 ## 六、与后续轮次接点（本步少做防返工）
 
@@ -111,7 +120,7 @@
 
 ## 八、待确认/风险
 
-- 敌人头顶条挂点高度首测微调（±30cm）。
+- 敌人头顶条挂点高度：默认 90cm（Mannequin 头顶实测），每骨架按需微调；BP 改值 BeginPlay 生效，无需重编译。
 - PC 若已有 `OnPossess` 逻辑（招架支援链）→ 在既有函数内插入 `RefreshSquad()`，勿重复 override；HUD 创建时机取 PC 既有初始化锚点，避免与 `bIsSwitching` 首帧竞态。
 - 死亡仅影响敌人侧已有用例；队员 Eliminated 路径若原型无触发入口，灰显逻辑仍按 HP=0 事件实现（防未来用例），PIE 可用临时手段验证。
 - **PIE 窗口视口放大**（2026-09-08 实测）：standalone PIE 窗口的渲染视口比窗口大约 1.4 倍，右下/右中锚点的控件（技能按钮）落在窗口外看不见——不是布局错，切 **Play In Viewport** 或调整 PIE 窗口分辨率即可。目视验证时可用"临时改锚点 + 截图 + 复位"绕过。

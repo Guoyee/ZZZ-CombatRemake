@@ -53,9 +53,10 @@ AZZZCombatEnemy::AZZZCombatEnemy()
 	HeadStatus->SetupAttachment(GetRootComponent());
 	HeadStatus->SetRelativeLocation(FVector(0.0f, 0.0f, HeadBarHeight));
 	HeadStatus->SetWidgetSpace(EWidgetSpace::Screen);
-	// 固定像素画布 (同 DamageWidget 160x48 先例): WBP_EnemyHead 在画布内锚定布局;
-	// 首测按观感微调 (UI-Design §八)。
-	HeadStatus->SetDrawSize(FVector2D(240.0f, 84.0f));
+	// 固定像素画布 (同 DamageWidget 160x48 先例): WBP_EnemyHead 在画布内锚定布局。
+	// 高度贴合内容 (名字 11pt + 条 12pt ≈ 26pt)——画布留白会让内容整体偏上
+	// (内容顶对齐), 首测按观感微调 (UI-Design §八)。
+	HeadStatus->SetDrawSize(FVector2D(220.0f, 40.0f));
 	HeadStatus->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	HeadStatus->SetWindowFocusable(false);
 }
@@ -129,6 +130,13 @@ void AZZZCombatEnemy::BeginPlay()
 				Spec.Data->DynamicGrantedTags.AddTag(FZZZGameplayTags::Get().State_Enemy);
 				AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*Spec.Data.Get());
 			}
+		}
+
+		// 挂点高度按 HeadBarHeight 在运行期应用 (BP 改值即刻生效, 无需重编译;
+		// 构造器里那次只为编辑器预览)。
+		if (HeadStatus)
+		{
+			HeadStatus->SetRelativeLocation(FVector(0.0f, 0.0f, HeadBarHeight));
 		}
 
 		// 敌人头顶状态条 (UI-Design §三): SetWidgetClass 在组件已 BeginPlay 后即刻
