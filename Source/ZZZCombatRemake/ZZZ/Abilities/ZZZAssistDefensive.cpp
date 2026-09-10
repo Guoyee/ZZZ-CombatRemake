@@ -158,6 +158,17 @@ void UZZZAssistDefensive::OnParryImpact(const FGameplayEventData* Payload)
 	}
 }
 
+void UZZZAssistDefensive::OnMontageBlendOut()
+{
+	// 故意不调用 Super（基类实现在此 EndAbility）——招架 GA 必须活到敌人打击帧事件
+	// 到场，详见头文件注释。蒙太奇的混合出本身照旧发生，只是不再顺带结束能力：
+	// ParryImpact 监听与 CanCombo 窗一直保持到蒙太奇真正播完
+	// （OnMontageCompleted → EndAbility 兜底）或事件/连段交接把它结束。
+	// 留一行 Log 供 PIE 核对时序（blend-out 到了、能力还活着）。
+	UE_LOG(LogZZZCombatRemake, Log,
+		TEXT("UZZZAssistDefensive: montage blend-out — ability kept alive (waiting for ParryImpact; ends on montage completion)."));
+}
+
 void UZZZAssistDefensive::EndAbility(
 	const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActorInfo* ActorInfo,

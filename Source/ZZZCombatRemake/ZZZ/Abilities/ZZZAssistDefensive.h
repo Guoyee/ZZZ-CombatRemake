@@ -80,6 +80,22 @@ public:
 		bool bReplicateEndAbility, bool bWasCancelled) override;
 
 	/**
+	 * 蒙太奇的自动 blend-out 不结束本 GA（2026-09-10，覆写为空实现——对照基类：基类
+	 * 在此 EndAbility，同 UZZZSpecialAttack 的拦截手法）。原因：带 BlendOut 的蒙太奇
+	 * 在**段尾前 BlendOut(0.25s)** 就触发 blend-out（引擎 FAnimMontageInstance::Advance
+	 * 只在最后一段判 PlayTimeToEnd ≤ BlendOutTriggerTime），而招架 GA 的结束位由敌人
+	 * 打击帧事件（Event.Combat.ParryImpact）决定：蒙太奇 0.567s 覆盖窗口起点按键所需
+	 * 的 0.333s（敌人蒙太奇 RateScale=1 时）本有 0.233s 余量，但 blend-out 抢走 0.25s
+	 * 后 GA 寿命只剩 0.317s → **短 1 帧**——窗口最早期按下时 GA 先结束、ParryImpact
+	 * 监听已解绑，事件到场
+	 * 无监听者 → 不跳段、不定格，姿势被 blend 回 idle（症状：摆完招架动作迅速回 idle）。
+	 * 结束位改由 OnMontageCompleted（蒙太奇真播完）兜底，与类头契约
+	 * "No input → montage completes → EndAbility" 一致；blend 观感不变（蒙太奇照常
+	 * 从段尾前 0.25s 开始混合出，只是不再顺带杀掉能力）。
+	 */
+	virtual void OnMontageBlendOut() override;
+
+	/**
 	 * 敌人定格帧事件消费（Event.Combat.ParryImpact，敌人 notify 广播到本 ASC ——
 	 * 事件路由保证方法跑在能力实例上，绝非 CDO——2026-09-05 修复）：
 	 * ① Montage_JumpToSection(RecoverSectionName)（两段式——定格姿势 = 收势段首帧,

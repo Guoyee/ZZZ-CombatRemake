@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 招架(弹刀) / 突击 / 编队切换 + 3.5 时间管理 + 特殊技/能量
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel/突击 C++ 未做（并入后续排程，见 §四）；**2026-09-08 排程决策：元素/异常不做（仅玩法相关，与角色表现无关）；后续顺序 = HUD（TeamPanel/技能按钮）+ 敌人头顶条（血条/失衡，非 HUD）→ 连携技 → 大招 → 特效全量铺底**；**2026-09-08 屏幕 HUD ✅**（TeamPanel 槽序旋转/头像/血条/能量/HP 数值 + 技能按钮圆底盘/灰度就绪态 + 开局预加载全部小队成员）；**2026-09-10 HUD 定稿 + 敌人头顶条 ✅**（TeamPanel 改 3 栏位一体面板 + 设计器摆位 + C++ 直接写控件；`WBP_EnemyHead` 名字/血条/失衡条；设计/资产见 `ZZZ-UI-Design.md`，MCP 配方见 `ZZZ-MCP-Pitfalls.md`）——**下一步 = 连携技**
+> **状态**（2026-09-08 对齐）：Task 0–4 + Task 5a ✅；冲刺攻击/闪避反击 ✅（珂蕾妲资产完成、流程跑通，2026-09-02）；普通切换 ✅（2026-09-02）；慢动作发放点定稿 ✅ + 敌人蒙太奇 notify 已摆（2026-09-03，含招架 notify）；特殊技/能量 C++ + 珂蕾妲资产 ✅（2026-09-03，E 键已绑、输入缓冲已并入）；**招架支援 ✅ 全链路（2026-09-05 定稿落地，PIE 支援突击稳定触发）**——C++（TryParrySwitch 敌前摆位 / AssistDefensive 事件路由 + 段跳转 / ParryImpact notify / 双窗口）+ 资产（GA_Koleda_AssistDefence·Rush / AM_AssistDefensive 两段式 / GE_ParryFreeze 0.3s）+ 基类 `TrySetupComboHandoff` 双窗口默认件（2026-09-05 原则：技能默认支持 inputbuffer + combo）；敌人失衡恢复 ✅（2026-09-05：`State.Stun` 改 Duration 5s 自过期）；**招架/突击 Motion Warping ✅（2026-09-07，PIE 验证通过）**；TeamPanel/突击 C++ 未做（并入后续排程，见 §四）；**2026-09-08 排程决策：元素/异常不做（仅玩法相关，与角色表现无关）；后续顺序 = HUD（TeamPanel/技能按钮）+ 敌人头顶条（血条/失衡，非 HUD）→ 连携技 → 大招 → 特效全量铺底**；**2026-09-08 屏幕 HUD ✅**（TeamPanel 槽序旋转/头像/血条/能量/HP 数值 + 技能按钮圆底盘/灰度就绪态 + 开局预加载全部小队成员）；**2026-09-10 HUD 定稿 + 敌人头顶条 ✅**（TeamPanel 改 3 栏位一体面板 + 设计器摆位 + C++ 直接写控件；`WBP_EnemyHead` 名字/血条/失衡条；设计/资产见 `ZZZ-UI-Design.md`，MCP 配方见 `ZZZ-MCP-Pitfalls.md`）；**2026-09-10 招架早按必失败修复 ✅**（症状：黄闪瞬间按下 → 摆完招架姿势迅速回 idle。根因 = 蒙太奇自动 blend-out 在段尾前 0.25s 就结束 GA，而窗口起点按键需活 0.333s，差 1 帧 → ParryImpact 广播到场无监听者；`UZZZAssistDefensive` 覆写 `OnMontageBlendOut` 拦截，结束位交给 `OnMontageCompleted`——细节见 System-Design §4.7 结束位纪律 + §4.9.2）——**下一步 = 连携技**
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策
@@ -24,7 +24,7 @@
 - **2026-09-02 冲刺攻击/闪避反击（珂蕾妲资产完成、流程跑通）**：GA_DashAttack（蒙太奇 AM_Attack_Rush，NextCombo=GA_BasicAttack_02）/ GA_DashCounter（AM_Attack_Counter）；GA_Dodge 追击双槽（DashFollowUp/PerfectFollowUp）已配。
 - **2026-09-02 普通切换**：新人物立即进场（`BeginSwitchIn`，右后方）+ 旧人物异步退场状态机（等攻击 GA → `ExitMontage`/`RunningExitMontage` → 材质淡出 → 隐藏广播）；`bIsSwitching` + 竞态双守卫；相机走 GameplayCameras manager 过渡（另见相机文档）。
 - **2026-09-03 攻击族基础件**：基类组合交接 `TrySetupComboHandoff`/`GetComboNext`；`EndEventTag` 默认 `Event.Combat.AttackEnd`（ini 预注册）；穿敌 notify `CollisionPassThrough` + `RotationOverride`；`Move()` 收刀 tag 显式清理。
-- **2026-09-03 完美闪避慢动作发放点定稿（C++ + 敌人蒙太奇 notify 已摆）**：判定仍按下时（黄闪窗）→ `UZZZDodge` 只给敌人挂 `Effect.Enemy.Dodged`（A 层 LooseTag，EndAbility 兜底）→ 敌人蒙太奇 notify 消费 → 自施 `UZZZGameplayEffect_SlowMotion`（1.0s/0.15，打空后起）。玩家侧慢放 0.5 不动。**资产已做**：AM_EnemyAttack 已摆 `ZZZEnemyDodgeSlow`（0.396s）与 `ZZZEnemyParryImpact`（0.392s）、黄闪 GC（0.067s）、AttackTrace 伤害帧（0.406s）、AbilityWindow（0.059–0.375s）。
+- **2026-09-03 完美闪避慢动作发放点定稿（C++ + 敌人蒙太奇 notify 已摆）**：判定仍按下时（黄闪窗）→ `UZZZDodge` 只给敌人挂 `Effect.Enemy.Dodged`（A 层 LooseTag，EndAbility 兜底）→ 敌人蒙太奇 notify 消费 → 自施 `UZZZGameplayEffect_SlowMotion`（1.0s/0.15，打空后起）。玩家侧慢放 0.5 不动。**资产已做**：AM_EnemyAttack 已摆 `ZZZEnemyDodgeSlow`（0.396s）与 `ZZZEnemyParryImpact`（0.392s）、黄闪 GC（0.067s）、AttackTrace 伤害帧（0.406s）、AbilityWindow（0.059–0.375s）。（以上均为**时间轴值**——真实时刻 = ÷RateScale，见「风险与坑」17）
 - **2026-09-03 特殊技 + 能量系统（C++ ✅ + 珂蕾妲资产 ✅；输入缓冲并入同 commit）**：`UZZZSpecialAttack` 档位模型（Lead A/B/C ×3 蒙太奇 + Body 普通/强化 ×2 = GA_Koleda_SpecialAttack 已配：Direct=BA02/BA04、ComboLead=BA01/BA03/Dash.Counter、DashLead=Dash.Attack、EnergyCost 50、Asset Tags={Basic, Special}、NextCombo=DashAttack）；输入 = E（IA_ZZZSpecial 已建并绑定 IMC）；忙且无窗时进输入缓冲（开窗按 buffered tag 分流，Y 优先于连段）。能量：命中 +2、自然 1/s、隐藏队员照回。
 - **2026-09-04 招架（AssistDefensive）C++ 全套**（当日未提交——随 09-05 落地同批提交；资产已做）：见「三、进行中」清单 + 架构文档 §4.9.2。
 - **2026-09-05 敌人失衡恢复（PIE 验证通过）**：`UZZZGameplayEffect_Stun` 由 Infinite 改 **Duration 5.0s 自过期**；`ZZZAttributeSet` 失衡判据由 `bIsStunned` bool 改查 `State.Stun` tag 在场（bool 感知不到 GE 过期、会堵死二次失衡，已删）。原症状：Daze 满 → 永久眩晕 → 敌人永不恢复行动（普攻命中打断后"卡死"表象实为此，命中取消本身每次正常恢复——PIE 连续打断几十次均恢复）。
@@ -74,7 +74,7 @@
 4. **Timer lambda 悬垂**：硬直/顿帧定时器捕获 TWeakObjectPtr，禁止裸指针（现均 GE 化，新代码勿回退 Timer）。
 5. **CancelSwitchOut 顺序**：先清标志再 Montage_Stop，否则 Interrupted 回调误隐藏新角色。
 6. **动画骨架兼容**：占位动画必须珂蕾妲骨架；Mannequin 的 MM_Dash 不能用于 Okuma。
-7. **PlayMontageAndWait 双回调**（BlendOut+Completed 各 End 一次）：引擎守卫，勿"修复"。
+7. **PlayMontageAndWait 双回调**（BlendOut+Completed 各 End 一次）：引擎守卫，勿"修复"。**但 blend-out 在最后一段剩余播放 ≤ `BlendOutTriggerTime`（默认 = `BlendOut` 时长）时就触发**——没摆 EndEventTag notify 的技能，GA 寿命 = 蒙太奇时长 − BlendOut；需活到外部事件到场者（招架等打击帧、两段式 Lead）必须覆写 `OnMontageBlendOut()` 拦截（2026-09-10 招架 / 2026-09-03 特殊技），见 System-Design §4.7 结束位纪律。
 8. **Root Motion 与程序化位移互斥**：二选一；Root Motion 时收刀段不关（10.1/8.10 原则）。
 9. **Hit Stop/慢放/定格共享 CustomTimeDilation**：恢复值现读属性（属性为唯一真源），防覆盖他档。
 10. **招架打断时序**：定格 → 取消 → 硬直全在敌人攻击 GA 存活期内完成（notify 0.392s 早于 GA 自然结束）；敌人攻击 GA 必须有 Asset Tags=Ability.Attack.Enemy 才能被 CancelAbilities 定位。蒙太奇 bStopWhenAbilityEnds=false → 取消后无主收尾，定格 GE 到期自然恢复。
@@ -84,6 +84,7 @@
 14. **SwitchOut 被打断竞态**：旧角色 SwitchOut 期间挂 State.Invulnerable（免伤拦截在扣血前短路）；Interrupted 分支仍隐藏兜底。
 15. **5.8 API 事实**：`SetCustomTimeDilation` 已移除（直接属性赋值）；UHT 禁止 UFUNCTION 参数为 struct 裸指针（`const FGameplayEventData*`），用 GenericGameplayEventCallbacks + lambda。
 16. **调试工具边界**：`showdebug AbilitySystem` 只显示玩家 ASC（不随准星切目标）；看敌人 tag 用实时日志/蓝图打印或关掉玩家遮挡后目测。
+17. **敌人蒙太奇时间戳 = 时间轴值**：notify / 窗口 / 段界报的都是 timeline 秒，**真实时刻 = ÷RateScale**（`FAnimMontageInstance::Advance` 按 PlayRate×RateScale 推进位置）。AM_EnemyAttack 测试期设 0.6 → 打击帧真实 0.654s（不是 0.392s）、窗口 528ms；切回 1.0 才是文档里那组数。任何"按键窗口 vs notify 余量"的推算先换算——2026-09-10 招架 1 帧缺口就是这么算漏的。
 
 ## 六、关键文件
 
