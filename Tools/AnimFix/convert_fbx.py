@@ -1,7 +1,11 @@
 """
-Modify binary FBX: Root Z→Y (negated), Bip001 Z→0
+Inspect binary FBX (read-only): locate the Root / Bip001 AnimationCurveNode
+patterns and report their offsets and nearby curve/key counts.
+
+Does NOT write the file. Use it to confirm which curve carries which axis
+before running fix_animation.py or rotate_root_bone.py inside the editor.
 """
-import struct
+import sys
 
 def search_fbx(input_path):
     with open(input_path, 'rb') as f:
@@ -46,4 +50,8 @@ def search_fbx(input_path):
         pos += 1
 
 if __name__ == '__main__':
-    search_fbx('D:/UE5/ZZZCombatRemake/model/K_Attack_01.fbx')
+    if len(sys.argv) < 2:
+        print(__doc__.strip())
+        print('\nusage: python Tools/AnimFix/convert_fbx.py <path-to.fbx>')
+        raise SystemExit(2)
+    search_fbx(sys.argv[1])

@@ -52,6 +52,6 @@ Content/*
 # Source animation files (FBX source art, not imported into the project)
 model/
 
-# Python tool caches (root-level tooling scripts)
+# Python tool caches (tooling scripts under Tools/)
 __pycache__/
 *.pyc
