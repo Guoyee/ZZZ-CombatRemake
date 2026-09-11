@@ -9,8 +9,12 @@
 
 class UInputAction;
 class UInputMappingContext;
+class ALevelSequenceActor;
 class AZZZCharacter;
 class AZZZCombatEnemy;
+class UCameraRigAsset;
+class ULevelSequence;
+class ULevelSequencePlayer;
 class UZZZDamageNumberWidget;
 class UZZZDamageNumberPool;
 class UZZZPlayerHUDWidget;
@@ -46,6 +50,74 @@ public:
 	 * 激活失败(BP 未配置/被阻塞) = 敌人攻击照常、新人物站场, 不挂 tag。
 	 */
 	void TryParrySwitch(AZZZCombatEnemy* ParryEnemy);
+
+	// === 特写相机请求 (招架特写 / 后续连携, 2026-09-11) ===
+	//
+	// 机制: 特写 = Main 层 rig 切换, 由 director (CDE_PlayerCamera) 每帧读取本
+	// 请求决定 push 哪个 rig —— 非空 push 特写 rig, 空 push 主 rig
+	// (CR_ThirdPerson)。归还 = director 下一帧改 push 主 rig, 特写按自己的
+	// ExitTransitions blend out + pop。
+	//
+	// 为什么走 director 而不是 C++ 直接 push rig (2026-09-11 引擎源码核实):
+	// ① 引擎无 "rig 自动归还" —— ExitTransitions 只是 blend 资产, 触发条件只有
+	//    "被新 push 顶掉" 或显式 deactivate (PersistentBlendStackCameraNode.cpp
+	//    FindExitTransition 只在移除/冻结时查找);
+	// ② director 每帧调 ActivateCameraRig (TransientBlendStackCameraNode::Push
+	//    去重只对 "栈顶同 context 同 rig" 生效) —— 任何侧路 push 的特写都会被
+	//    director 下一帧顶掉, 所以特写必须作为 director 的决策结果 push。
+	// 另: manager 模式下组件的 ActivatePersistent*CameraRig 全路径不可用
+	// (EnsureCameraSystemHostIfNeeded 在 bRunStandaloneCameraSystem=false 时直接
+	//  return false → HasCameraSystem()==false), 不要往那条路上走。
+
+	/** 请求特写相机 (表现点调用, 如招架定格帧); null = 等价 ClearCloseupCamera。 */
+	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
+	void RequestCloseupCamera(UCameraRigAsset* CloseupRig);
+
+	/** 清除特写请求 —— director 下一帧归还主 rig。 */
+	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
+	void ClearCloseupCamera();
+
+	/** 当前特写请求 (director BP 每帧读取; null = 无特写)。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Camera")
+	UCameraRigAsset* GetRequestedCloseupRig() const { return RequestedCloseupRig; }
+
+	// === 分镜过场 (大招 pose 阶段等, 2026-09-11) ===
+	//
+	// LevelSequence 全包式过场: 相机 (CameraCut) + 角色动画 + 后处理/遮挡。
+	// 相机接管走 Sequencer 标准路径: CameraCut → PC->SetViewTarget(CineCameraActor)
+	// → manager 建 FActorCameraEvaluationContext 压栈 (对 CineCameraActor 是正确
+	// 行为, 复制其相机属性); 归还 = CameraCut section 的 When Finished =
+	// Restore State → SetViewTarget(原角色 Pawn) → 栈内组件 context 移顶
+	// (2026-09-11 引擎源码核实: 组件的 context owner 是组件本身, GetTypedOuter
+	// 命中 Pawn → FindContextByPredicate 走"既有 context 移顶"分支, 不踩
+	// actor-copy 陷阱)。⚠ 5.8 的 FMovieSceneSequencePlaybackSettings 无
+	// bRestoreState 字段 (旧资料误导) —— 归还是 per-section 设置, 资产侧配。
+
+	/**
+	 * 播放分镜过场 (动态绑定 BindActor 到 Sequence 里打了 BindingTag 的 binding)。
+	 * 调用前会先停掉上一个过场; 播完 (或 StopCinematic) 时宿主 actor 销毁。
+	 * @param Sequence   LevelSequence 资产 (须含 Camera Cut Track)。
+	 * @param BindActor  绑定对象 (通常 = 当前操作角色), 可空 (纯相机分镜)。
+	 * @param BindingTag Sequence 内角色 binding 的 Tag (空 = 不绑定)。
+	 * @return 宿主 actor; 失败返回 null。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
+	ALevelSequenceActor* PlayCinematic(ULevelSequence* Sequence, AActor* BindActor, FName BindingTag);
+
+	/** 停止当前过场 (Stop + 销毁宿主 actor; 未播放时为 no-op)。相机的归还由 CameraCut section 配置决定。 */
+	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
+	void StopCinematic();
+
+	/** 当前是否在播过场。 */
+	UFUNCTION(BlueprintPure, Category = "ZZZ|Camera")
+	bool IsCinematicPlaying() const { return CinematicPlayer != nullptr; }
+
+	/**
+	 * PIE 测试入口 (控制台命令 ZZZ.PlayCinematic, 见 cpp 的 FAutoConsoleCommand):
+	 * 加载 SequencePath 并播放, 绑定当前 Pawn。
+	 *   ZZZ.PlayCinematic /Game/ZZZ/Camera/LS_Test_Koleda UltimatePlayer
+	 */
+	static void ConsolePlayCinematic(const TArray<FString>& Args);
 
 	/** Pooled damage number accessor (used by the GameplayCue). */
 	UZZZDamageNumberPool* GetDamageNumberPool() const { return DamageNumberPool; }
@@ -116,6 +188,21 @@ private:
 	/** 屏幕 HUD 实例（CreateHUD 一次创建, 会话期复用）。 */
 	UPROPERTY(Transient)
 	TObjectPtr<UZZZPlayerHUDWidget> HUDWidget;
+	/** 当前特写 rig 请求（Transient；CDE_PlayerCamera 每帧读, 见 GetRequestedCloseupRig）。 */
+	UPROPERTY(Transient)
+	TObjectPtr<UCameraRigAsset> RequestedCloseupRig;
+
+	/** 过场播放器（Transient; PlayCinematic 创建, 播完/停止清空）。 */
+	UPROPERTY(Transient)
+	TObjectPtr<ULevelSequencePlayer> CinematicPlayer;
+
+	/** 过场宿主 actor（Transient; 随播放创建, 播完/停止销毁）。 */
+	UPROPERTY(Transient)
+	TObjectPtr<ALevelSequenceActor> CinematicSequenceActor;
+
+	/** Sequence 自然播完回调（清引用; 宿主 actor 销毁推迟到下一帧）。 */
+	UFUNCTION()
+	void HandleCinematicFinished();
 	/** Spawned squad instances (hidden while inactive) — 按首次登场/注册序追加, 勿假设与 SquadClasses index 对齐。 */
 	UPROPERTY()
 	TArray<TObjectPtr<AZZZCharacter>> SquadMembers;

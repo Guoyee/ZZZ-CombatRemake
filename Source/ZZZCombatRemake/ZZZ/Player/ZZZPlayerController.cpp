@@ -12,8 +12,14 @@
 #include "EngineUtils.h"
 #include "GameFramework/GameplayCameraComponent.h"
 #include "GameFramework/GameplayCamerasPlayerCameraManager.h"
+#include "HAL/IConsoleManager.h"
 #include "InputCoreTypes.h"
+#include "LevelSequence.h"
+#include "LevelSequenceActor.h"
+#include "LevelSequencePlayer.h"
+#include "MovieSceneSequencePlaybackSettings.h"
 #include "Tags/ZZZGameplayTags.h"
+#include "TimerManager.h"
 #include "ZZZCharacter.h"
 #include "ZZZCombatEnemy.h"
 #include "ZZZCombatRemake.h"
@@ -21,6 +27,14 @@
 #include "ZZZDamageNumberWidget.h"
 #include "ZZZPlayerCameraManager.h"
 #include "ZZZPlayerHUDWidget.h"
+
+// PIE 测试命令 (2026-09-11): 分镜过场的手动验证入口 —— 大招 GA 未落地前先验证
+// 镜头接管/归还本身。用法: ZZZ.PlayCinematic <SequenceAssetPath> [BindingTag]
+static FAutoConsoleCommand ZZZPlayCinematicCommand(
+	TEXT("ZZZ.PlayCinematic"),
+	TEXT("Play a level sequence cinematic bound to the current pawn. "
+	     "Usage: ZZZ.PlayCinematic <SequenceAssetPath> [BindingTag]"),
+	FConsoleCommandWithArgsDelegate::CreateStatic(&AZZZPlayerController::ConsolePlayCinematic));
 
 AZZZPlayerController::AZZZPlayerController(const FObjectInitializer& ObjectInit)
 	: Super(ObjectInit)
@@ -176,6 +190,136 @@ void AZZZPlayerController::SetupInputComponent()
 void AZZZPlayerController::ToggleEnemyPause()
 {
 	AZZZCombatEnemy::ToggleGlobalPause();
+}
+
+void AZZZPlayerController::RequestCloseupCamera(UCameraRigAsset* CloseupRig)
+{
+	// 只存请求——真正的 rig 切换由 CDE_PlayerCamera 每帧执行(见头文件注释)。
+	RequestedCloseupRig = CloseupRig;
+}
+
+void AZZZPlayerController::ClearCloseupCamera()
+{
+	RequestedCloseupRig = nullptr;
+}
+
+ALevelSequenceActor* AZZZPlayerController::PlayCinematic(ULevelSequence* Sequence, AActor* BindActor, FName BindingTag)
+{
+	if (!Sequence)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning, TEXT("PlayCinematic: null sequence — ignored."));
+		return nullptr;
+	}
+
+	// 同一时间只允许一个过场: 先停掉上一个 (含清理可能残留的宿主 actor)。
+	StopCinematic();
+
+	FMovieSceneSequencePlaybackSettings Settings;
+	Settings.bDisableMovementInput = true;  // pose 阶段为纯演出 —— 锁操作
+	Settings.bDisableLookAtInput = true;
+	// 相机接管由 Sequence 的 Camera Cut Track 负责 —— 不要 bDisableCameraCuts。
+
+	ALevelSequenceActor* SeqActor = nullptr;
+	CinematicPlayer = ULevelSequencePlayer::CreateLevelSequencePlayer(GetWorld(), Sequence, Settings, SeqActor);
+	if (!CinematicPlayer || !SeqActor)
+	{
+		UE_LOG(LogZZZCombatRemake, Error, TEXT("PlayCinematic: failed to create player for '%s'."), *GetNameSafe(Sequence));
+		CinematicPlayer = nullptr;
+		return nullptr;
+	}
+	CinematicSequenceActor = SeqActor;
+	CinematicPlayer->OnFinished.AddDynamic(this, &AZZZPlayerController::HandleCinematicFinished);
+
+	// 动态绑定 (大招在任意位置释放 → Sequence 里的角色占位在运行时指向当前操作角色)。
+	// 相机机位在 Sequence 里以"相对绑定角色"编排时, 这一绑就是全部对位工作。
+	if (BindActor && !BindingTag.IsNone())
+	{
+		SeqActor->SetBindingByTag(BindingTag, TArray<AActor*>{ BindActor }, /*bAllowBindingsFromAsset*/ false);
+	}
+
+	CinematicPlayer->Play();
+	UE_LOG(LogZZZCombatRemake, Log, TEXT("PlayCinematic: '%s' started (binding '%s' → '%s')."),
+		*GetNameSafe(Sequence), *BindingTag.ToString(), *GetNameSafe(BindActor));
+	return SeqActor;
+}
+
+void AZZZPlayerController::StopCinematic()
+{
+	if (CinematicPlayer)
+	{
+		// Stop 触发各 section 的结束处理 —— CameraCut section 配 Restore State 时
+		// 在此归还 view target (SetViewTarget(原 Pawn) → 组件 context 移顶 → 主 rig 回来)。
+		CinematicPlayer->Stop();
+		CinematicPlayer = nullptr;
+	}
+	if (CinematicSequenceActor)
+	{
+		CinematicSequenceActor->Destroy();
+		CinematicSequenceActor = nullptr;
+	}
+}
+
+void AZZZPlayerController::HandleCinematicFinished()
+{
+	// 自然播完: 相机归还在 section 的结束处理里已完成 (Restore State → 主 rig)。
+	// 宿主 actor 的销毁推迟到下一帧 —— OnFinished 在 Sequencer 求值回调栈里广播,
+	// 当场销毁 player 的宿主会踩求值后置处理。
+	CinematicPlayer = nullptr;
+	if (ALevelSequenceActor* SeqActor = CinematicSequenceActor)
+	{
+		CinematicSequenceActor = nullptr;
+		if (UWorld* World = GetWorld())
+		{
+			TWeakObjectPtr<ALevelSequenceActor> WeakActor(SeqActor);
+			World->GetTimerManager().SetTimerForNextTick([WeakActor]()
+			{
+				if (ALevelSequenceActor* Actor = WeakActor.Get())
+				{
+					Actor->Destroy();
+				}
+			});
+		}
+	}
+}
+
+void AZZZPlayerController::ConsolePlayCinematic(const TArray<FString>& Args)
+{
+	// FAutoConsoleCommand 是静态注册的, 无 this —— 找 PIE/Game world 的第一个玩家 PC。
+	UWorld* World = nullptr;
+	if (GEngine)
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if ((Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game) && Context.World())
+			{
+				World = Context.World();
+				break;
+			}
+		}
+	}
+	AZZZPlayerController* PC = World ? Cast<AZZZPlayerController>(World->GetFirstPlayerController()) : nullptr;
+	if (!PC)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning, TEXT("ZZZ.PlayCinematic: no AZZZPlayerController — run in PIE/Game."));
+		return;
+	}
+
+	if (Args.Num() < 1 || Args[0].IsEmpty())
+	{
+		UE_LOG(LogZZZCombatRemake, Warning,
+			TEXT("ZZZ.PlayCinematic: usage — ZZZ.PlayCinematic <SequenceAssetPath> [BindingTag]"));
+		return;
+	}
+
+	ULevelSequence* Sequence = LoadObject<ULevelSequence>(nullptr, *Args[0]);
+	if (!Sequence)
+	{
+		UE_LOG(LogZZZCombatRemake, Warning, TEXT("ZZZ.PlayCinematic: failed to load '%s'."), *Args[0]);
+		return;
+	}
+
+	const FName BindingTag = Args.Num() > 1 ? FName(*Args[1]) : NAME_None;
+	PC->PlayCinematic(Sequence, PC->GetPawn(), BindingTag);
 }
 
 void AZZZPlayerController::SwitchToNextCharacter()

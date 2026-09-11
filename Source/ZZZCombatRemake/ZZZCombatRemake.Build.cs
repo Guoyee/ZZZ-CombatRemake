@@ -23,7 +23,9 @@ public class ZZZCombatRemake : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"GameplayCameras",
-			"MotionWarping"  // 招架/突击 root motion 扭曲 (2026-09-06)
+			"MotionWarping",  // 招架/突击 root motion 扭曲 (2026-09-06)
+			"LevelSequence",  // 分镜过场: 大招 pose 阶段 Sequence 播放 (2026-09-11)
+			"MovieScene"      // FMovieSceneSequencePlaybackSettings / 绑定 (2026-09-11)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
