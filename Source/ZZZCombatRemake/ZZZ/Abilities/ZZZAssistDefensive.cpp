@@ -4,17 +4,14 @@
 #include "AbilitySystemComponent.h"
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Core/CameraRigAsset.h"
 #include "Effects/ZZZStatusGameplayEffects.h"
 #include "Enemies/ZZZCombatEnemy.h"
 #include "GameFramework/Character.h"
 #include "GameplayEffect.h"
 #include "MotionWarpingComponent.h"
 #include "Tags/ZZZGameplayTags.h"
-#include "TimerManager.h"
 #include "ZZZCharacter.h"
 #include "ZZZCombatRemake.h"
-#include "ZZZPlayerController.h"
 
 UZZZAssistDefensive::UZZZAssistDefensive()
 {
@@ -91,11 +88,10 @@ void UZZZAssistDefensive::ActivateAbility(
 		return;  // PlayAttackMontage already ended the ability (null montage)
 	}
 
-	// 招架特写 (2026-09-11 时序定稿): 按下空格的瞬间切入 —— PC 的 TryParrySwitch 是
-	// 按键帧内的同步链(摆位→Possess→激活本 GA), 所以这里 ≡ 按键瞬间; 蒙太奇已起播
-	// 才请求(失败已 return, 不会白切特写)。director 下一帧读到请求即 push 特写 rig,
-	// 特写与"招架者入场"同拍开始, 覆盖 冲入→摆架势→定格 全程。
-	StartCloseupCamera();
+	// 招架特写 (2026-09-11 tag 化): 零代码 —— 本 GA BP 的 ActivationOwnedTags 加 tag
+	// `Camera.Closeup.Parry` 即生效: UZZZTagCameraDirector 每帧读 ASC tags → push 特写
+	// rig。本 GA 激活 = 按键瞬间(PC TryParrySwitch 是按键帧内同步链), director 下一帧
+	// 即切; tag 随本 GA 结束自动清 → 特写归还(支援突击接管时亦然)。
 
 	// 支援突击 handoff (2026-09-04/05, 直接走 CanCombo 连招逻辑): the parry
 	// montage's recover tail carries the generic CanCombo window; an attack
@@ -166,57 +162,8 @@ void UZZZAssistDefensive::OnParryImpact(const FGameplayEventData* Payload)
 			*RecoverSectionName.ToString());
 	}
 
-	// 注: 招架特写已在 ActivateAbility(按键瞬间)切入 —— 此处不再触发(2026-09-11
-	// 时序定稿: 初版在定格帧切入, 用户定稿为按下空格即切; 定时器从按键起算)。
-}
-
-void UZZZAssistDefensive::StartCloseupCamera()
-{
-	if (!CloseupRig)
-	{
-		return;  // 未配特写 rig —— 招架照常, 无镜头表现
-	}
-
-	APawn* Avatar = Cast<APawn>(GetAvatarActorFromActorInfo());
-	AZZZPlayerController* PC = Avatar ? Cast<AZZZPlayerController>(Avatar->GetController()) : nullptr;
-	if (!PC)
-	{
-		return;  // 无本地 PC (理论只在 PIE 玩家路径激活) —— 静默跳过
-	}
-
-	PC->RequestCloseupCamera(CloseupRig);
-	UE_LOG(LogZZZCombatRemake, Log,
-		TEXT("UZZZAssistDefensive: closeup camera requested ('%s', %.2fs)."),
-		*GetNameSafe(CloseupRig), CloseupDuration);
-
-	if (CloseupDuration > 0.0f)
-	{
-		if (UWorld* World = GetWorld())
-		{
-			World->GetTimerManager().SetTimer(
-				CloseupTimerHandle, this, &UZZZAssistDefensive::StopCloseupCamera, CloseupDuration, false);
-		}
-	}
-	// CloseupDuration == 0: 不自动归还, 持续到 EndAbility (StopCloseupCamera 兜底)。
-}
-
-void UZZZAssistDefensive::StopCloseupCamera()
-{
-	if (UWorld* World = GetWorld())
-	{
-		World->GetTimerManager().ClearTimer(CloseupTimerHandle);
-	}
-
-	// 幂等 + 不误伤: 只在 PC 上挂着的请求仍是本能力的 rig 时才清 —— 若期间
-	// 请求已被改写 (未来的连携/大招复用该通道), 归还责任已转移, 不动。
-	APawn* Avatar = Cast<APawn>(GetAvatarActorFromActorInfo());
-	AZZZPlayerController* PC = Avatar ? Cast<AZZZPlayerController>(Avatar->GetController()) : nullptr;
-	if (PC && CloseupRig && PC->GetRequestedCloseupRig() == CloseupRig)
-	{
-		PC->ClearCloseupCamera();
-		UE_LOG(LogZZZCombatRemake, Log,
-			TEXT("UZZZAssistDefensive: closeup camera released — returning to the main rig."));
-	}
+	// 注: 招架特写由 tag 驱动 (本 GA 的 ActivationOwnedTags 含 Camera.Closeup.Parry),
+	// 与定格帧事件无关 —— 无需在此触发 (2026-09-11 tag 化)。
 }
 
 void UZZZAssistDefensive::OnMontageBlendOut()
@@ -272,10 +219,8 @@ void UZZZAssistDefensive::EndAbility(
 		Owner->ClearParryEnemy();
 	}
 
-	// 特写归还兜底 (2026-09-11): 定时器未到点就结束 (接支援突击 / 被中断 / 蒙太奇
-	// 提前播完) —— 清请求 + 清定时器, director 下一帧归还主 rig。幂等, 见 StopCloseupCamera。
-	StopCloseupCamera();
-
 	// State.Invulnerable needs no manual removal — ActivationOwnedTags.
+	// 招架特写同理由 ActivationOwnedTags 管理 (Camera.Closeup.Parry 随本 GA 结束自动清,
+	// director 下一帧归还主 rig) —— 2026-09-11 tag 化后无需手写清理。
 	Super::EndAbility(Handle, ActorInfo, ActivationInfo, bReplicateEndAbility, bWasCancelled);
 }

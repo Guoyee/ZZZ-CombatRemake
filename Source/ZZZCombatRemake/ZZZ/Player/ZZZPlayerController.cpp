@@ -192,17 +192,6 @@ void AZZZPlayerController::ToggleEnemyPause()
 	AZZZCombatEnemy::ToggleGlobalPause();
 }
 
-void AZZZPlayerController::RequestCloseupCamera(UCameraRigAsset* CloseupRig)
-{
-	// 只存请求——真正的 rig 切换由 CDE_PlayerCamera 每帧执行(见头文件注释)。
-	RequestedCloseupRig = CloseupRig;
-}
-
-void AZZZPlayerController::ClearCloseupCamera()
-{
-	RequestedCloseupRig = nullptr;
-}
-
 ALevelSequenceActor* AZZZPlayerController::PlayCinematic(ULevelSequence* Sequence, AActor* BindActor, FName BindingTag)
 {
 	if (!Sequence)

@@ -132,6 +132,11 @@ void FZZZGameplayTags::InitializeNativeGameplayTags()
 		FName("Effect.Enemy.ParryPending"),
 		FString("Attack being parried (granted by the PC at the parry press; consumed by the enemy-montage parry-impact notify; attack GA EndAbility fallback)"));
 
+	// === Camera (镜头表现 — rig 切换的 tag 驱动, 2026-09-11) ===
+	GameplayTagsSingleton.Camera_Closeup_Parry = Manager.AddNativeGameplayTag(
+		FName("Camera.Closeup.Parry"),
+		FString("Parry closeup camera (put on the parry GA's ActivationOwnedTags; UZZZTagCameraDirector maps it to a rig)"));
+
 	// === SetByCaller Data ===
 	GameplayTagsSingleton.Data_Damage = Manager.AddNativeGameplayTag(
 		FName("Data.Damage"), FString("SetByCaller: base damage before defense scaling"));

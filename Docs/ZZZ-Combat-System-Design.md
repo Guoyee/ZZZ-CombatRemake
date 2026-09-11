@@ -229,12 +229,12 @@ IA_Attack → IMC → `UZZZInputConfig`(IA→Tag) → `AZZZCharacter::Input_Abil
 - **敌人引用生命周期**：PC `TryParrySwitch` 摆位后把目标敌人写入新成员（`AZZZCharacter::SetParryEnemy`，TWeakObjectPtr，防销毁悬垂）→ 招架 GA（`UZZZAssistDefensive`）激活时读它写落点 warp target `ZZZ_ParryLand`（`AddOrUpdateWarpTargetFromLocationAndRotation`：落点 = 敌 `hand_r` 打击点骨骼 + 敌Forward×`ParryWarpForwardOffset`(40cm 默认, GA 可配)，yaw 面敌）→ 支援突击 GA（`UZZZFollowUpAttack` 族——普攻/闪避追击同基类但无该引用, 天然不受影响）激活时**取走并清空**该引用并写 `ZZZ_RushLand`（敌位置 − 敌Forward×`RushPassDistance`(200cm 默认)，旋转 = 位移方向，穿敌后保持冲刺朝向）→ 招架 GA `EndAbility` 兜底清空（链未接上/被中断防残留误触发）。穿敌碰撞不在 C++——突击蒙太奇段摆 `CollisionPassThrough` notify 盖全程（授 `State.PassThrough` 停 RotateToTarget 索敌转向）；`GA_Koleda_AssistRush` 关 `bRotateToTarget`（招架姿势已面敌，warp 负责穿后朝向）。
 - **warp 窗口（资产侧）** = 蒙太奇上 `AnimNotifyState_MotionWarping`（SkewWarp 修饰器），`WarpTargetName` 必须与 C++ 槽名一致（`ZZZ_ParryLand` 在招架突进段 / `ZZZ_RushLand` 在突击冲刺段）。**算法事实（5.8 引擎源码）**：SkewWarp 每帧按「剩余到目标距离 ÷ 窗口内剩余 root motion」重缩放位移 → 窗口结束时**必落 target**（动画位移长短不影响到达——动画"太短"只表现为速度变快）；窗口段无 root motion 时走 Lerp 补位移路径（窗口起点→target，同样必达）；`MaxSpeedClampRatio` 须 0（>0 限速 → 到不了位）；warp 只改每帧位移不改动画播放时长。调试：`a.MotionWarping.Debug 2` / `.Debug.Target 1`。
 
-**招架特写镜头（✅ 2026-09-11 PIE 验证通过；机制全文见 `Docs/ZZZ-Camera-Architecture.md` §四）**：
+**招架特写镜头（✅ 2026-09-11 PIE 验证通过，tag 驱动定稿；机制全文见 `Docs/ZZZ-Camera-Architecture.md` §四）**：
 
-- **触发时机 = 按下空格瞬间**（用户定稿）：`UZZZAssistDefensive::ActivateAbility`（蒙太奇起播后）→ `StartCloseupCamera()` 向 PC 写特写请求（`RequestCloseupCamera`）。PC 的 `TryParrySwitch` 是按键帧内的同步链（摆位→Possess→激活 GA），故"GA 激活"≡"按键瞬间"——特写与招架者入场同拍，覆盖 冲入→摆架势→定格 全程。（初版实现在定格帧切入，2026-09-11 修订前移。）
-- **执行 / 归还**：`CDE_PlayerCamera`（director BP）每帧读 PC 请求——非空 push 特写 rig、空 push `CR_ThirdPerson`（**director 是唯一激活点**，绕路 push 会被下一帧顶掉）；`CloseupDuration`（默认 1.2s，按键起算）+ GA `EndAbility` 兜底清请求即归还。**引擎无"rig 自动归还"**——`ExitTransitions` 只是 blend 资产（相机文档初版此处说法已更正）。
-- **资产**：`CR_Closeup_Parry`（`SetLocation`/`SetRotation` 的 `OffsetSpace=Pawn` 锁机位与角度——不跟鼠标；BoomArm 不可用因其无 InputSlot 时自动吃 ControlRotation；删 CollisionPush；FOV 38；Enter 过渡 Easing 0.06s 快切）+ `GA_Koleda_AssistDefence` 的 `CloseupRig`/`CloseupDuration` + `CDE_PlayerCamera` 分支（CastFailed 兜底主 rig）。
-- **复用**：连携技 / 后续多角色多技能的镜头效果沿用同一 request 通道（新技能 = 配自己的 rig + GA 填 `CloseupRig`）；tag 驱动升级（GameplayTag→rig 映射 + 优先级、Director 每帧查 ASC tags）方案已论证、待实施。
+- **触发（技能侧零代码）**：招架 GA BP 的 `ActivationOwnedTags` 加 **`Camera.Closeup.Parry`**——tag 存活期 = 能力存活期。"按下空格瞬间切入"由此自然成立（GA 激活 = 按键帧，PC `TryParrySwitch` 是按键帧内同步链）。
+- **决策 / 归还**：`CA_ZZZCamera` 的 director = **`UZZZTagCameraDirector`**（C++）每帧查角色 ASC owned tags → 命中 `TagMappings` 最高优先级 rig（`Camera.Closeup.Parry → CR_Closeup_Parry`）；无命中 → `DefaultRig`（`CR_ThirdPerson`）。GA 结束/被中断 → tag 自动清 → director 下一帧归还主 rig。⚠ **引擎无"rig 自动归还"**（`ExitTransitions` 只是 blend 资产）；**director 是唯一激活点**（绕路 push 会被下一帧顶掉）。
+- **资产**：`CR_Closeup_Parry`（`SetLocation`/`SetRotation` 的 `OffsetSpace=Pawn` 锁机位与角度——不跟鼠标；BoomArm 不可用因其无 InputSlot 时自动吃 ControlRotation；删 CollisionPush；FOV 38）+ `CA_ZZZCamera`（**新建 CA 时选 `ZZZTagCameraDirector`**——"换 director"的正确路径与两条挂载通道的取舍详见相机文档 §四.2 教训）+ GA 上的 tag。
+- **复用（多角色多技能）**：新技能 = GA 加一个 `Camera.*` tag + CA 的 `TagMappings` 加一行（Tag + Rig + Priority，Priority 解多 tag 冲突）。
 
 ### 4.10 连携技 Director（Phase 5）
 

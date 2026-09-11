@@ -3,12 +3,10 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Engine/EngineTypes.h"  // FTimerHandle (特写归还定时器)
 #include "GameplayEffectTypes.h"  // FActiveGameplayEffectHandle (freeze GE handle)
 #include "ZZZGameplayAbility.h"
 #include "ZZZAssistDefensive.generated.h"
 
-class UCameraRigAsset;
 class UGameplayEffect;
 
 /**
@@ -145,31 +143,13 @@ protected:
 	// UGameplayAbility 族) 激活, 同普攻连段/闪避追击机制。GA BP 配 NextComboAbility
 	// = GA_AssistRush; 空 = 无追击、窗内攻击按 terminal-hit 语义吞掉。
 
-	// === Parry closeup (招架特写, 2026-09-11) ===
-	// 按键瞬间切入 (2026-09-11 时序定稿 —— 初版在定格帧, 用户定稿为"按下空格即切"):
-	// GA 激活成功 (PlayAttackMontage 之后) 向 PC 写特写 rig 请求 (director 每帧读取
-	// → Main 层 push, 机制见 AZZZPlayerController::RequestCloseupCamera 注释);
-	// CloseupDuration 后归还 (PC 清请求 → director 下一帧 push 主 rig),
-	// GA 结束/中断兜底清理。PC 的 TryParrySwitch 是按键帧内的同步链
-	// (摆位→Possess→激活 GA), 故"GA 激活"≡"按下瞬间"。
-
-	/** 招架特写 rig (按键瞬间切入; 空 = 不做特写)。资产侧建议 CR_Closeup_Parry。 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Closeup")
-	TObjectPtr<UCameraRigAsset> CloseupRig;
-
-	/**
-	 * 特写持续时长 (秒, 世界时间——角色 CustomTimeDilation 冻结不拉伸它)。
-	 * 从按键瞬间起算: 需覆盖 最坏入场余量(敌人窗起点按 ≈0.66s) + 定格(0.3s) + 收势一点。
-	 * 0 = 不自动归还, 持续到 GA 结束。
-	 */
-	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "ZZZ|Assist|Closeup", meta = (ClampMin = "0.0"))
-	float CloseupDuration = 1.2f;
-
-	/** 按键瞬间切入特写 (ActivateAbility 蒙太奇起播后调用; 未配 rig / 无 PC 时静默跳过, 不影响招架本身)。 */
-	void StartCloseupCamera();
-
-	/** 归还主相机 (定时到点 + EndAbility 兜底; 幂等——请求已被他人改写时不动)。 */
-	void StopCloseupCamera();
+	// === 招架特写 (2026-09-11 tag 化) ===
+	// 特写在按键瞬间切入、随 GA 结束归还 —— 零 C++: 招架 GA BP 的 ActivationOwnedTags
+	// 加 tag `Camera.Closeup.Parry`, CA_PlayerCameras 的 UZZZTagCameraDirector 每帧读
+	// ASC tags → push 映射的 rig (CR_Closeup_Parry)。tag 存活期 = 能力存活期,
+	// 支援突击接管(本 GA 结束)时特写自动归还。
+	// 机制/坑: Docs/ZZZ-Camera-Architecture.md §四。
+	// (原 CloseupRig/CloseupDuration 配置槽 + Start/StopCloseupCamera 由本方案取代删除。)
 
 private:
 	/** 本次招架是否已收到定格（防同帧重复广播重复施加冻结 GE）。 */
@@ -177,7 +157,4 @@ private:
 
 	/** Event.Combat.ParryImpact 监听句柄（ActivateAbility 绑定, EndAbility 解绑——同 EndEventHandle 纪律）。 */
 	FDelegateHandle ParryImpactHandle;
-
-	/** 特写归还定时器（CloseupDuration 到点 → StopCloseupCamera；EndAbility 清除）。 */
-	FTimerHandle CloseupTimerHandle;
 };

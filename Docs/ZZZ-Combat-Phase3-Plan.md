@@ -1,7 +1,7 @@
 # Phase 3 实施计划 — 闪避 / 招架(弹刀) / 突击 / 编队切换 + 3.5 时间管理 + 特殊技/能量
 
 > **项目**: ZZZCombatRemake (UE 5.8) · 批准 2026-08-02 双审核通过
-> **状态**（2026-09-11 对齐）：Phase 3 主体 ✅（Task 0–5a / 招架支援全链路 / Motion Warping / 屏幕 HUD + 敌人头顶条 / 招架早按必失败修复——细则见各节与 git log；排程决策见 §四）。**2026-09-11 招架特写镜头 ✅ PIE 验证**：C++ = PC 特写请求通道（`RequestCloseupCamera`/`ClearCloseupCamera`）+ `UZZZAssistDefensive::CloseupRig`/`CloseupDuration`（**按键瞬间**切入、到期/GA 结束归还）；资产 = `CR_Closeup_Parry`（SetLocation/SetRotation·Pawn 锁机位 + FOV38 + Enter 0.06s 快切）、`CDE_PlayerCamera` 每帧读请求分支、`GA_Koleda_AssistDefence` 配 rig。机制全文/坑 = `ZZZ-Camera-Architecture.md` §四 + §六.11–14。**大招分镜镜头基建 ⬜ 已写未验证**（`PlayCinematic`/`StopCinematic` + `ZZZ.PlayCinematic` 命令；归还开关 = CameraCut section When Finished=Restore State，5.8 无全局 bRestoreState 字段）。——**下一步 = 镜头 rig 切换 tag 化升级**（GameplayTag→rig 映射 + 优先级；多角色多技能复用，方案已论证待实施）**或连携技**。
+> **状态**（2026-09-11 对齐）：Phase 3 主体 ✅（Task 0–5a / 招架支援全链路 / Motion Warping / 屏幕 HUD + 敌人头顶条 / 招架早按必失败修复——细则见各节与 git log）。**2026-09-11 招架特写镜头 ✅ + rig 切换 tag 化 ✅（PIE 验证）**：C++ = `UZZZTagCameraDirector`（`UCameraDirector` 子类：每帧查角色 ASC owned tags → `TagMappings` 最高优先级 rig，无命中 → DefaultRig）+ `Camera.*` tag 层（`Camera.Closeup.Parry`）；资产 = `CA_ZZZCamera`（**新建 CA 时选 C++ director**）+ `CR_Closeup_Parry`（SetLocation/SetRotation·Pawn 锁机位 + FOV38）+ GA 的 `ActivationOwnedTags` 加 tag（**技能侧零代码**）。机制 + "换 director 的两条通道取舍"教训 = `ZZZ-Camera-Architecture.md` §四/§六.11–16。**大招分镜镜头基建 ⬜ 已写未验证**（`PlayCinematic`/`StopCinematic` + `ZZZ.PlayCinematic` 命令；归还 = CameraCut section 的 When Finished=Restore State）。——**下一步 = 连携技**（特写模板已就绪可直接复用：GA 加 tag + TagMappings 加一行）**或大招分镜验证**。
 > **旧版备份**: `Docs/archive/ZZZ-Combat-Phase3-Plan.md.orig`（勿读，仅查证历史）
 
 ## 一、已确认决策

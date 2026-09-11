@@ -12,7 +12,6 @@ class UInputMappingContext;
 class ALevelSequenceActor;
 class AZZZCharacter;
 class AZZZCombatEnemy;
-class UCameraRigAsset;
 class ULevelSequence;
 class ULevelSequencePlayer;
 class UZZZDamageNumberWidget;
@@ -51,35 +50,17 @@ public:
 	 */
 	void TryParrySwitch(AZZZCombatEnemy* ParryEnemy);
 
-	// === 特写相机请求 (招架特写 / 后续连携, 2026-09-11) ===
+	// === 镜头 rig 切换 (2026-09-11 tag 化) ===
 	//
-	// 机制: 特写 = Main 层 rig 切换, 由 director (CDE_PlayerCamera) 每帧读取本
-	// 请求决定 push 哪个 rig —— 非空 push 特写 rig, 空 push 主 rig
-	// (CR_ThirdPerson)。归还 = director 下一帧改 push 主 rig, 特写按自己的
-	// ExitTransitions blend out + pop。
-	//
-	// 为什么走 director 而不是 C++ 直接 push rig (2026-09-11 引擎源码核实):
-	// ① 引擎无 "rig 自动归还" —— ExitTransitions 只是 blend 资产, 触发条件只有
-	//    "被新 push 顶掉" 或显式 deactivate (PersistentBlendStackCameraNode.cpp
-	//    FindExitTransition 只在移除/冻结时查找);
-	// ② director 每帧调 ActivateCameraRig (TransientBlendStackCameraNode::Push
-	//    去重只对 "栈顶同 context 同 rig" 生效) —— 任何侧路 push 的特写都会被
-	//    director 下一帧顶掉, 所以特写必须作为 director 的决策结果 push。
-	// 另: manager 模式下组件的 ActivatePersistent*CameraRig 全路径不可用
-	// (EnsureCameraSystemHostIfNeeded 在 bRunStandaloneCameraSystem=false 时直接
-	//  return false → HasCameraSystem()==false), 不要往那条路上走。
-
-	/** 请求特写相机 (表现点调用, 如招架定格帧); null = 等价 ClearCloseupCamera。 */
-	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
-	void RequestCloseupCamera(UCameraRigAsset* CloseupRig);
-
-	/** 清除特写请求 —— director 下一帧归还主 rig。 */
-	UFUNCTION(BlueprintCallable, Category = "ZZZ|Camera")
-	void ClearCloseupCamera();
-
-	/** 当前特写请求 (director BP 每帧读取; null = 无特写)。 */
-	UFUNCTION(BlueprintPure, Category = "ZZZ|Camera")
-	UCameraRigAsset* GetRequestedCloseupRig() const { return RequestedCloseupRig; }
+	// rig 切换由 CA_PlayerCameras 的 director (UZZZTagCameraDirector) 每帧决策:
+	// 读当前角色 ASC 的 owned tags → 命中 TagMappings 最高优先级者的 rig;
+	// 无命中 → DefaultRig (主 rig CR_ThirdPerson)。
+	// 技能侧零代码: GA 的 ActivationOwnedTags 加对应 tag (如 Camera.Closeup.Parry)
+	// 即生效——tag 存活期 = 能力存活期, 故特写随 GA 结束自动归还
+	// (支援突击接管时招架 GA 结束 → 特写归还)。
+	// 机制与坑 (director 是唯一激活点 / 引擎无 rig 自动归还 / 过渡查找顺序等):
+	// Docs/ZZZ-Camera-Architecture.md §四 + Source/ZZZCombatRemake/ZZZ/Player/ZZZTagCameraDirector.h。
+	// (原 PC 特写请求通道 RequestCloseupCamera 已由本方案取代删除, 2026-09-11。)
 
 	// === 分镜过场 (大招 pose 阶段等, 2026-09-11) ===
 	//
@@ -188,10 +169,6 @@ private:
 	/** 屏幕 HUD 实例（CreateHUD 一次创建, 会话期复用）。 */
 	UPROPERTY(Transient)
 	TObjectPtr<UZZZPlayerHUDWidget> HUDWidget;
-	/** 当前特写 rig 请求（Transient；CDE_PlayerCamera 每帧读, 见 GetRequestedCloseupRig）。 */
-	UPROPERTY(Transient)
-	TObjectPtr<UCameraRigAsset> RequestedCloseupRig;
-
 	/** 过场播放器（Transient; PlayCinematic 创建, 播完/停止清空）。 */
 	UPROPERTY(Transient)
 	TObjectPtr<ULevelSequencePlayer> CinematicPlayer;

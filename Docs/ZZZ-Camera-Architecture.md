@@ -73,12 +73,15 @@
 
 ## 四、特写镜头（招架已落地 2026-09-11 PIE 验证；连携/大招复用本基建）
 
-### 机制（链路三层，职责分离）
+### 机制（tag 驱动，2026-09-11 定稿；同日由 PC 请求通道版升级）
 
-1. **请求（C++，只写状态不切镜头）**：`UZZZAssistDefensive::StartCloseupCamera()`（`ActivateAbility` 蒙太奇起播后 = **按下空格瞬间**，PC 的 TryParrySwitch 是按键帧内同步链）→ `AZZZPlayerController::RequestCloseupCamera(UCameraRigAsset*)`（PC 上 Transient 请求位）。
-2. **执行（BP director，唯一激活点）**：`CDE_PlayerCamera` 每帧 `RunCameraDirector` 读 `GetRequestedCloseupRig()`——非空 → `ActivateCameraRig(特写 rig)`；空 → `ActivateCameraRig(CR_ThirdPerson)`。**为什么必须过 director**：它每帧的 push 会顶掉任何绕路的 push（`TransientBlendStackCameraNode::Push` 去重只对"栈顶同 context 同 rig"生效，`TransientBlendStackCameraNode.cpp:28-78`）。
-3. **归还（同 ②）**：`CloseupDuration`（默认 1.2s，**按键起算**，需覆盖 最坏入场余量≈0.66s + 定格 0.3s + 收势）+ GA 结束兜底 → PC 清请求 → director 下一帧 push 主 rig → 特写被 blend out + pop。
+1. **触发（技能侧零代码）**：技能 GA 的 `ActivationOwnedTags` 加一个 `Camera.*` tag（招架 = `Camera.Closeup.Parry`）——**tag 存活期 = 能力存活期**，挂/清全自动（零 C++、零计时器）。招架的"按下空格瞬间切入"即由此自然成立：GA 激活 = 按键帧（PC `TryParrySwitch` 同步链）。
+2. **决策（C++ director，唯一激活点）**：`CA_ZZZCamera` 的 Camera Director = `UZZZTagCameraDirector`（纯 C++ 类）。每帧：owner（角色的 GameplayCamera 组件）→ `GetOwner()` → Pawn → ASC → `GetOwnedGameplayTags()` → 命中 `TagMappings` 中**最高优先级**项 → `OutResult.Add(该 rig)`；**无命中 → `DefaultRig`（CR_ThirdPerson）**。
+   - **为什么必须过 director**：它每帧的 push 会顶掉任何绕路的 push（`TransientBlendStackCameraNode::Push` 去重只对"栈顶同 context 同 rig"生效，`TransientBlendStackCameraNode.cpp:28-78`）。
+   - **⚠ 换 director 的教训（2026-09-11 实查）**：引擎两条挂载通道各有短板——① **`UCameraDirector` 子类**（如本类）：逻辑可纯 C++，但 CA 的 `CameraDirector` 属性 `private` 无 `EditAnywhere`、setter `UCameraAsset::SetCameraDirector` 无 `UFUNCTION`（脚本不可达）、换类型的 UI 藏在 `Asset 菜单 → Actions → Change Camera Director`（`CameraAssetEditorToolkit.cpp:391`，`SStandaloneAssetEditorToolkitHost.cpp:127-129`）；② **`CameraDirectorEvaluatorClass`**（挂载容易：`Camera Director` tab 可直接改，`CameraDirectorAssetEditorMode.cpp:47`）但 `RunCameraDirector` 是 `BlueprintImplementableEvent`，**C++ 无法覆写**，逻辑只能进 BP。→ **解法 = 新建 CA 时选 C++ director 类型**（`CameraAssetFactory.cpp:27-28` 创建时正经调 `SetCameraDirector`），逻辑完整留在 C++，无 BP 壳。
+3. **归还（同 ②）**：GA 结束/被中断 → `ActivationOwnedTags` 自动清 tag → director 下一帧 push `DefaultRig` → 特写被 blend out + pop。
    ⚠ **引擎无"rig 自动归还"**（初版本节"自带 ExitTransitions 自动归还"的说法有误）：`ExitTransitions` 只是 blend 资产，触发条件只有"被新 push 顶掉"或显式 deactivate。
+4. **扩展（多角色多技能）**：新技能 = GA 加一个 `Camera.*` tag + CA 的 `TagMappings` 加一行（Tag + Rig + Priority）；优先级解决"多 tag 同时命中"。内置 `FZZZCameraTagMapping`。
 
 ### 机位锁定（特写 rig 搭法）
 
@@ -93,7 +96,7 @@
   `① 旧rig Exit → ② 旧asset Exit → ③ 新rig Enter → ④ 新asset Enter`。
 - `CR_Closeup_Parry` 的 **Enter** 配 Easing **0.06s**（快切）；**Exit** 可不配（fallback 到 CA 的 0.25s 平滑归还）。
 - ⚠ **`CR_ThirdPerson` 不要配过渡**："切人"与"切入特写"的 **From rig 都是它**（切人 = 角色 A 主 rig → 角色 B 主 rig，rig 资产同一个），配了会同时误伤两种切换，且两者需求速度不同无法用一条无条件过渡区分。
-- **CA_PlayerCameras 现有那条 0.25s 保留**（切人本职 + 全局兜底）。
+- **CA 级过渡（切人本职 + 全局兜底）**：`CA_ZZZCamera` 的 Shared Transitions 1 条 Easing（当前 **0.5s** HermiteCubicInOut；旧 CA 是 0.25s，按手感调）。
 - **编辑入口**：rig 的 Enter/ExitTransitions 是 `UPROPERTY(Instanced)` 无 `EditAnywhere`（`CameraRigAsset.h:82-84`）→ **不在细节面板**；入口 = Camera Rig 编辑器**工具栏的 `Transitions` 按钮**（与 `Node Hierarchy` 并列，`CameraRigAssetEditorCommands.cpp:32-35`），切到过渡图（水印 TRANSITIONS）编辑。
 - Transition 结构 = `Conditions[]`（留空=无条件；可用 `Is Camera Rig` 限 Previous/Next rig，或 `Gameplay Tag` 查 rig 的 GameplayTags）+ `Blend`（Easing/Pop/Linear…）；顺序敏感（取第一条全条件通过的）。
 
@@ -124,17 +127,21 @@
 11. **rig 过渡不在细节面板**：`EnterTransitions`/`ExitTransitions` 是 `UPROPERTY(Instanced)` 无 `EditAnywhere`（`CameraRigAsset.h:82-84`）——找它去 **Camera Rig 编辑器工具栏的 `Transitions` 按钮**（与 `Node Hierarchy` 并列），**不在节点图、不在细节面板**（2026-09-11 实查）。
 12. **给 `CR_ThirdPerson` 配过渡会误伤**：切人（主 rig→主 rig）与切入特写（主 rig→特写 rig）的 **From rig 都是它**——配无条件过渡会同时命中两种、且两者需求速度不同；保持空（详见 §四·过渡速度）。
 13. **BoomArm 自动吃 ControlRotation**：`InputSlot` 为空时引擎自动接 player controller view rotation（`BoomArmCameraNode.h:107-112`）——主 rig 依赖此行为（旋转恒=ControlRotation），特写 rig 必须换 `SetLocation`/`SetRotation`（`Pawn` 空间）。
-14. **特写归还必须显式**：引擎无"rig 播完自动归还"；本项目的实现 = director 每帧读 PC 请求（清空即归还）——初版"ExitTransitions 自动归还"的说法已作废。
+14. **特写归还必须显式**：引擎无"rig 播完自动归还"；本项目实现 = director 每帧决策（tag 消失即下一帧 push 回 DefaultRig）——初版"ExitTransitions 自动归还"的说法已作废。
+15. **换 CA 的 director 不要硬换**：`CameraDirector` 属性 protected、setter 无 `UFUNCTION`、换类型 UI 藏在 `Asset→Actions→Change Camera Director`（见 §四.2 教训）——**新建 CA 时选对 director 类**才是正路（工厂创建时正经调 setter）；`CameraDirectorEvaluatorClass` 那条通道只适用于"逻辑愿意写在 BP"的场景（`RunCameraDirector` 是 BP 事件，C++ 无法覆写）。
+16. **standalone 开关回归**：把 GameplayCamera 组件迁到父类/新建时，`bRunStandaloneCameraSystem` 默认 **`True`**（引擎默认）——manager 模式要求 **`False`**（2026-09-11 实际踩到：组件从 BP_Okuma 迁到 BP_ZZZCharacter 时丢了这个设置，见 §一.2）。
 
 ## 七、关键文件
 
-- `ZZZ/Player/ZZZPlayerController`（构造函数 manager 指定 + `OnPossess` 幂等激活 + `SwitchToNextCharacter` + **特写请求通道 / `PlayCinematic` 分镜播放入口**，2026-09-11）
+- `ZZZ/Player/ZZZPlayerController`（构造函数 manager 指定 + `OnPossess` 幂等激活 + `SwitchToNextCharacter` + `PlayCinematic`/`StopCinematic` 分镜播放入口）
 - `ZZZ/Player/ZZZPlayerCameraManager`（2026-09-04 新增，俯仰限幅，见 §八）
-- `ZZZ/Abilities/ZZZAssistDefensive`（**招架特写触发**：`CloseupRig`/`CloseupDuration` + `StartCloseupCamera`/`StopCloseupCamera`，2026-09-11）
+- **`ZZZ/Player/ZZZTagCameraDirector`**（2026-09-11 新增：`UCameraDirector` 子类 + `FZZZCameraTagMapping`；每帧查 ASC owned tags → 最高优先级命中 rig，无命中 → DefaultRig；`OnGatherRigUsageInfo` 声明全部 rig）
+- `ZZZ/Tags/ZZZGameplayTags`（**`Camera.*` tag 层**：`Camera.Closeup.Parry` 等——配在 GA 的 `ActivationOwnedTags` 上）
+- `ZZZ/Abilities/ZZZAssistDefensive`（招架特写**零代码**：GA BP 的 ActivationOwnedTags 加 tag 即生效）
 - `ZZZ/ZZZCharacter` / `ZZZ/Enemies/ZZZCombatEnemy`（胶囊/mesh 对 ECC_Camera Ignore）
 - `ZZZCombatRemake.Build.cs`（`GameplayCameras` + `LevelSequence`/`MovieScene` 依赖）
-- `/Game/ZZZ/Camera/`：`CA_PlayerCameras`（asset + EnterTransitions）、`CR_ThirdPerson`（主 rig）、`CDE_PlayerCamera`（director BP：每帧读特写请求 → push 特写/主 rig）、**`CR_Closeup_Parry`**（招架特写 rig：SetLocation/SetRotation[Pawn] + FOV 38 + Enter Easing）
-- 角色 BP：`/Game/ZZZ/character/BP_Okuma`、`BP_Jane`（GameplayCameraComponent：standalone=false，已配）
+- `/Game/ZZZ/Camera/`：**`CA_ZZZCamera`**（当前主 CA：director = `ZZZTagCameraDirector` 实例 · `DefaultRig=CR_ThirdPerson` · `TagMappings=[Camera.Closeup.Parry→CR_Closeup_Parry]` · Shared Transitions 1 条 Easing 0.5s）、`CR_ThirdPerson`（主 rig）、**`CR_Closeup_Parry`**（招架特写 rig：SetLocation/SetRotation[Pawn]、无 CollisionPush、FOV 38、Enter Easing）、`CA_PlayerCameras` + `CDE_PlayerCamera`（**旧请求通道链路，已停用，可删**）、`CDE_ZZZTagCameraDirector`（BP 子类模板，暂未引用）
+- 角色 BP：`/Game/ZZZ/character/BP_ZZZCharacter`（**GameplayCamera 组件在此**，BP_Okuma/BP_Jane 继承：`CameraAsset=CA_ZZZCamera`、`bRunStandaloneCameraSystem=false`）
 - 表现层：`ZZZ/Cues/GC_ZZZ_CameraShake`（不动）
 
 ## 八、玩家俯仰限幅（自定义子类，2026-09-04 落地）

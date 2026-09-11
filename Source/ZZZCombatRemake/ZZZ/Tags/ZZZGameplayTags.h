@@ -80,6 +80,11 @@ public:
 	FGameplayTag Effect_Enemy_Dodged;         // "Effect.Enemy.Dodged" (本次攻击已被完美闪避——闪避授予、敌人蒙太奇消费 notify 触发慢动作、攻击 GA EndAbility 兜底, 2026-09-03)
 	FGameplayTag Effect_Enemy_ParryPending;   // "Effect.Enemy.ParryPending" (本次攻击将被招架——PC 按键时授予、敌人定格帧 notify 消费触发定格、攻击 GA EndAbility 兜底, 2026-09-04)
 
+	// === Camera (镜头表现 — rig 切换的 tag 驱动, 2026-09-11) ===
+	// 配在 GA 的 ActivationOwnedTags 上（随能力生命周期自动挂/清, 零手写生命周期）;
+	// UZZZTagCameraDirector 每帧读角色 ASC 的 owned tags → 命中最高优先级映射的 rig。
+	FGameplayTag Camera_Closeup_Parry;  // "Camera.Closeup.Parry" (招架特写)
+
 	// === SetByCaller Data ===
 	FGameplayTag Data_Damage;          // "Data.Damage"
 	FGameplayTag Data_Daze;            // "Data.Daze"
